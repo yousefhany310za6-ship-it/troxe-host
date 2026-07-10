@@ -1,0 +1,9 @@
+# Node agent binary (build artifact)
+/troxe-agent
+*.exe
+
+# Go build output
+/dist/
+
+# Local config
+node.json
