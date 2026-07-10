@@ -159,7 +159,7 @@ export default function ServerDetailPage({
           </Badge>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             variant="outline"
@@ -213,7 +213,7 @@ export default function ServerDetailPage({
         ))}
       </div>
 
-      <nav className="flex gap-1 border-b border-border">
+      <nav className="flex gap-1 border-b border-border overflow-x-auto">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.href;
           return (
@@ -221,7 +221,7 @@ export default function ServerDetailPage({
               key={tab.name}
               href={`/dashboard/servers/${id}${tab.href ? `/${tab.href}` : ""}`}
               className={cn(
-                "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+                "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap",
                 isActive
                   ? "border-brand-500 text-brand-400"
                   : "border-transparent text-muted-foreground hover:text-foreground"

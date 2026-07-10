@@ -99,8 +99,8 @@ export default function UsersPage() {
         </Card>
       ) : users.length > 0 ? (
         <Card>
-          <CardContent className="p-0">
-            <table className="w-full text-sm">
+          <CardContent className="p-0 overflow-x-auto">
+            <table className="w-full text-sm min-w-[600px]">
               <thead>
                 <tr className="border-b border-border">
                   <th className="text-left px-6 py-3 font-medium text-muted-foreground">
