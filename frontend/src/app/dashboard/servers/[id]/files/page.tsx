@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import useSWR from "swr";
 import { fetchApi } from "@/lib/api";
+import Editor from "@monaco-editor/react";
 import {
   Folder,
   File,
@@ -19,6 +20,7 @@ import {
   X,
   Save,
   Loader2,
+  Hash,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -52,6 +54,32 @@ function getFileIcon(entry: FileEntry) {
   return File;
 }
 
+function detectLanguage(filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  const map: Record<string, string> = {
+    js: "javascript", jsx: "javascript", ts: "typescript", tsx: "typescript",
+    json: "json", jsonc: "json", jsonl: "json",
+    py: "python", pyw: "python",
+    rs: "rust", go: "go", rb: "ruby", php: "php",
+    java: "java", kt: "kotlin", swift: "swift", cs: "csharp",
+    c: "c", h: "c", cpp: "cpp", hpp: "cpp", cc: "cpp", cxx: "cpp",
+    css: "css", scss: "scss", less: "less",
+    html: "html", htm: "html", xml: "xml", svg: "xml",
+    md: "markdown", mdx: "markdown",
+    sh: "shell", bash: "shell", zsh: "shell", fish: "shell", ps1: "powershell",
+    yml: "yaml", yaml: "yaml",
+    toml: "ini", ini: "ini", cfg: "ini", conf: "ini",
+    sql: "sql", graphql: "graphql", gql: "graphql",
+    dockerfile: "dockerfile",
+    makefile: "makefile",
+    env: "dotenv",
+    txt: "plaintext", log: "plaintext",
+    gitignore: "plaintext", gitattributes: "plaintext",
+    lock: "json",
+  };
+  return map[ext] || "plaintext";
+}
+
 export default function FilesPage({
   params,
 }: {
@@ -66,8 +94,9 @@ export default function FilesPage({
   const [fileContent, setFileContent] = useState("");
   const [saving, setSaving] = useState(false);
   const [loadingFile, setLoadingFile] = useState(false);
+  const [lineCount, setLineCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<any>(null);
 
   const { data, error, isLoading, mutate } = useSWR<{ files: FileEntry[] }>(
     `/api/v1/servers/${id}/files/list?path=${encodeURIComponent(path)}`,
@@ -102,6 +131,7 @@ export default function FilesPage({
         `/api/v1/servers/${id}/files/${filePath}`
       );
       setFileContent(data.content || "");
+      setLineCount((data.content || "").split("\n").length);
     } catch {
       setFileContent("# Error loading file");
     } finally {
@@ -200,6 +230,15 @@ export default function FilesPage({
           <div className="flex items-center gap-3 min-w-0">
             <FileCode className="h-5 w-5 text-muted-foreground flex-shrink-0" />
             <h1 className="text-2xl font-bold truncate">{editingFile}</h1>
+            <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded-full flex-shrink-0">
+              {detectLanguage(editingFile)}
+            </span>
+            {lineCount > 0 && (
+              <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded-full flex-shrink-0 flex items-center gap-1">
+                <Hash className="h-3 w-3" />
+                {lineCount} lines
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setEditingFile(null)}>
@@ -223,18 +262,39 @@ export default function FilesPage({
               Loading...
             </div>
           ) : (
-            <textarea
-              ref={textareaRef}
+            <Editor
+              language={detectLanguage(editingFile)}
               value={fileContent}
-              onChange={(e) => setFileContent(e.target.value)}
-              className="flex-1 w-full bg-[#0a0a0a] text-[#d4d4d4] p-4 font-mono text-sm resize-none focus:outline-none min-h-0"
-              spellCheck={false}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-                  e.preventDefault();
-                  saveFile();
-                }
+              theme="vs-dark"
+              onChange={(value) => {
+                setFileContent(value || "");
+                setLineCount((value || "").split("\n").length);
               }}
+              onMount={(editor) => {
+                editorRef.current = editor;
+                editor.addCommand(
+                  2048 | 49, // CtrlCmd + S
+                  () => saveFile()
+                );
+                editor.focus();
+              }}
+              options={{
+                fontSize: 13,
+                fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace",
+                fontLigatures: true,
+                lineNumbers: "on",
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+                tabSize: 2,
+                wordWrap: "on",
+                padding: { top: 12 },
+                renderWhitespace: "selection",
+                bracketPairColorization: { enabled: true },
+                cursorBlinking: "smooth",
+                smoothScrolling: true,
+              }}
+              className="flex-1 min-h-0"
             />
           )}
         </Card>
