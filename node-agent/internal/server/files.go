@@ -282,18 +282,21 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request, server
 
 // Handle stats collection
 func (s *Server) getContainerStats(serverID string) map[string]interface{} {
-	// TODO: Use Docker SDK to get real container stats
-	// For now return mock data
-	return map[string]interface{}{
-		"memory_bytes":      0,
-		"memory_limit_bytes": 0,
-		"cpu_absolute":      0,
-		"network": map[string]interface{}{
-			"rx_bytes": 0,
-			"tx_bytes": 0,
-		},
-		"uptime": 0,
-		"state":  "stopped",
-		"disk_bytes": 0,
+	stats, err := s.containerMgr.GetStats(context.Background(), serverID)
+	if err != nil {
+		return map[string]interface{}{
+			"memory_bytes":       0,
+			"memory_limit_bytes": 0,
+			"cpu_absolute":       0,
+			"network": map[string]interface{}{
+				"rx_bytes": 0,
+				"tx_bytes": 0,
+			},
+			"uptime":     0,
+			"state":      "stopped",
+			"disk_bytes": 0,
+		}
 	}
+	return stats
+}
 }

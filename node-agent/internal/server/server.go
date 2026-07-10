@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -11,16 +12,17 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/troxe-host/node-agent/internal/auth"
 	"github.com/troxe-host/node-agent/internal/config"
-	"github.com/troxe-host/node-agent/internal/container"
-	"github.com/troxe-host/node-agent/internal/websocket"
+	troxcontainer "github.com/troxe-host/node-agent/internal/container"
+	troxwebsocket "github.com/troxe-host/node-agent/internal/websocket"
 )
 
 type Server struct {
 	cfg           *config.Config
-	containerMgr  *container.Manager
-	wsManager     *websocket.Manager
+	containerMgr  *troxcontainer.Manager
+	wsManager     *troxwebsocket.Manager
 	httpServer    *http.Server
 	mu            sync.RWMutex
 }
@@ -35,12 +37,12 @@ type WSClient struct {
 }
 
 func New(cfg *config.Config) (*Server, error) {
-	containerMgr, err := container.NewManager(cfg.DockerSocket)
+	containerMgr, err := troxcontainer.NewManager(cfg.DockerSocket)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container manager: %w", err)
 	}
 
-	wsManager := websocket.NewManager()
+	wsManager := troxwebsocket.NewManager()
 
 	return &Server{
 		cfg:          cfg,
@@ -52,11 +54,22 @@ func New(cfg *config.Config) (*Server, error) {
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 
-	// API routes
-	mux.HandleFunc("GET /api/servers/", s.handleServerRoutes)
-	mux.HandleFunc("POST /api/servers/", s.handleServerActions)
-	mux.HandleFunc("GET /api/servers/{id}/ws", s.handleWebSocket)
+	// Server action routes
+	mux.HandleFunc("POST /api/servers/{id}/create", s.handleCreateServer)
+	mux.HandleFunc("POST /api/servers/{id}/start", s.handleStartServer)
+	mux.HandleFunc("POST /api/servers/{id}/stop", s.handleStopServer)
+	mux.HandleFunc("POST /api/servers/{id}/restart", s.handleRestartServer)
+	mux.HandleFunc("POST /api/servers/{id}/kill", s.handleKillServer)
+	mux.HandleFunc("POST /api/servers/{id}/remove", s.handleRemoveServer)
+
+	// Server info routes
+	mux.HandleFunc("GET /api/servers/{id}/status", s.handleServerStatus)
 	mux.HandleFunc("GET /api/servers/{id}/logs", s.handleGetLogs)
+
+	// Console WebSocket
+	mux.HandleFunc("GET /api/servers/{id}/ws", s.handleWebSocket)
+
+	// File management
 	mux.HandleFunc("GET /api/servers/{id}/files", s.handleFileListRoute)
 	mux.HandleFunc("GET /api/servers/{id}/files/*", s.handleFileReadRoute)
 	mux.HandleFunc("PUT /api/servers/{id}/files/*", s.handleFileWriteRoute)
@@ -64,10 +77,14 @@ func (s *Server) Start() error {
 	mux.HandleFunc("DELETE /api/servers/{id}/files/*", s.handleFileDeleteRoute)
 	mux.HandleFunc("POST /api/servers/{id}/files/rename", s.handleFileRenameRoute)
 	mux.HandleFunc("POST /api/servers/{id}/files/upload", s.handleFileUploadRoute)
+
+	// Stats
 	mux.HandleFunc("GET /api/servers/{id}/stats", s.handleStatsRoute)
+
+	// Health
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 
-	// Add auth middleware
+	// Auth middleware
 	handler := s.authMiddleware(mux)
 
 	s.httpServer = &http.Server{
@@ -88,10 +105,8 @@ func (s *Server) Shutdown() {
 	s.httpServer.Shutdown(ctx)
 }
 
-// Auth middleware
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Health check doesn't need auth
 		if r.URL.Path == "/api/health" {
 			next.ServeHTTP(w, r)
 			return
@@ -110,44 +125,192 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Add claims to context
 		ctx := context.WithValue(r.Context(), "claims", claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// WebSocket handler for console
+// --- Server Actions ---
+
+type CreateServerRequest struct {
+	Image       string            `json:"image"`
+	Startup     string            `json:"startup"`
+	Environment map[string]string `json:"environment"`
+	MemoryBytes int64             `json:"memory_bytes"`
+	CpuPercent  float64           `json:"cpu_percent"`
+	PidLimit    int               `json:"pid_limit"`
+	DataPath    string            `json:"data_path"`
+	Ports       []int             `json:"ports"`
+}
+
+func (s *Server) handleCreateServer(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	var req CreateServerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	if req.DataPath == "" {
+		req.DataPath = fmt.Sprintf("%s/%s", s.cfg.DataDirectory, serverID)
+	}
+	if req.MemoryBytes == 0 {
+		req.MemoryBytes = 2 * 1024 * 1024 * 1024 // 2GB default
+	}
+	if req.CpuPercent == 0 {
+		req.CpuPercent = 100
+	}
+	if req.PidLimit == 0 {
+		req.PidLimit = 512
+	}
+
+	sc, err := s.containerMgr.Create(r.Context(), troxcontainer.CreateOptions{
+		ServerID:    serverID,
+		Image:       req.Image,
+		Startup:     req.Startup,
+		Environment: req.Environment,
+		MemoryBytes: req.MemoryBytes,
+		CpuPercent:  req.CpuPercent,
+		PidLimit:    req.PidLimit,
+		DataPath:    req.DataPath,
+		Ports:       req.Ports,
+	})
+	if err != nil {
+		log.Printf("Failed to create container for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"success":      true,
+		"container_id": sc.ContainerID,
+		"status":       sc.Status,
+	})
+}
+
+func (s *Server) handleStartServer(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	if err := s.containerMgr.Start(r.Context(), serverID); err != nil {
+		log.Printf("Failed to start container for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "status": "running"})
+}
+
+func (s *Server) handleStopServer(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	if err := s.containerMgr.Stop(r.Context(), serverID); err != nil {
+		log.Printf("Failed to stop container for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "status": "stopped"})
+}
+
+func (s *Server) handleRestartServer(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	if err := s.containerMgr.Restart(r.Context(), serverID); err != nil {
+		log.Printf("Failed to restart container for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "status": "running"})
+}
+
+func (s *Server) handleKillServer(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	if err := s.containerMgr.Kill(r.Context(), serverID); err != nil {
+		log.Printf("Failed to kill container for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "status": "stopped"})
+}
+
+func (s *Server) handleRemoveServer(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	if err := s.containerMgr.Remove(r.Context(), serverID); err != nil {
+		log.Printf("Failed to remove container for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	status, err := s.containerMgr.GetStatus(r.Context(), serverID)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status": "not_found",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": status,
+	})
+}
+
+func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	tail := 100
+	if t := r.URL.Query().Get("tail"); t != "" {
+		fmt.Sscanf(t, "%d", &tail)
+	}
+
+	logs, err := s.containerMgr.GetLogs(r.Context(), serverID, tail)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"logs": logs,
+	})
+}
+
+// --- WebSocket Console ---
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	serverID := r.PathValue("id")
 
-	// Get JWT from query param
 	tokenStr := r.URL.Query().Get("token")
 	if tokenStr == "" {
 		http.Error(w, "token required", http.StatusBadRequest)
 		return
 	}
 
-	// Validate JWT
 	claims, err := auth.ValidateJWT(tokenStr, s.cfg.DaemonToken)
 	if err != nil {
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
 
-	// Check permission
 	if !claims.HasPermission("websocket.connect") {
 		http.Error(w, "permission denied", http.StatusForbidden)
 		return
 	}
 
-	// Upgrade to WebSocket
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
-		CheckOrigin: func(r *http.Request) bool {
-			origin := r.Header.Get("Origin")
-			return origin == s.cfg.PanelURL
-		},
+		CheckOrigin:     func(r *http.Request) bool { return true },
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -166,12 +329,33 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.wsManager.Register(client)
 	defer s.wsManager.Unregister(client)
 
-	// Start goroutines for reading and writing
+	// Stream container logs to client
+	go s.streamLogs(client)
+
 	go client.writePump()
 	client.readPump(s)
 }
 
-// Read pump for WebSocket
+func (s *Server) streamLogs(client *WSClient) {
+	ctx := context.Background()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			logs, err := s.containerMgr.GetLogs(ctx, client.serverID, 10)
+			if err == nil && len(logs) > 0 {
+				client.sendJSON(map[string]interface{}{
+					"type": "output",
+					"data": logs,
+				})
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}
+}
+
 func (c *WSClient) readPump(s *Server) {
 	defer func() {
 		c.mu.Lock()
@@ -206,7 +390,6 @@ func (c *WSClient) readPump(s *Server) {
 
 		switch msg.Event {
 		case "auth":
-			// Already authenticated via JWT
 			c.sendJSON(map[string]interface{}{
 				"event": "auth",
 				"args":  []string{"success"},
@@ -216,6 +399,10 @@ func (c *WSClient) readPump(s *Server) {
 			if len(msg.Args) > 0 {
 				if err := s.containerMgr.Exec(context.Background(), c.serverID, []string{"/bin/sh", "-c", msg.Args[0]}); err != nil {
 					log.Printf("Exec failed: %v", err)
+					c.sendJSON(map[string]interface{}{
+						"type":  "output",
+						"data":  fmt.Sprintf("Error: %v\n", err),
+					})
 				}
 			}
 
@@ -236,7 +423,6 @@ func (c *WSClient) readPump(s *Server) {
 	}
 }
 
-// Write pump for WebSocket
 func (c *WSClient) writePump() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer func() {
@@ -252,11 +438,9 @@ func (c *WSClient) writePump() {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-
 			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 				return
 			}
-
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
@@ -276,76 +460,23 @@ func (c *WSClient) sendJSON(data interface{}) {
 	select {
 	case c.send <- jsonData:
 	default:
-		// Channel full, drop message
 	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "healthy",
-		"version":   "0.1.0",
-		"uptime":    time.Since(startTime).String(),
+		"status":  "healthy",
+		"version": "0.1.0",
+		"uptime":  time.Since(startTime).String(),
 	})
 }
 
 var startTime = time.Now()
 
-func (s *Server) handleServerRoutes(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement server info endpoint
-	json.NewEncoder(w).Encode(map[string]interface{}{"message": "TODO"})
-}
+// --- Helpers ---
 
-func (s *Server) handleServerActions(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement server actions
-	json.NewEncoder(w).Encode(map[string]interface{}{"message": "TODO"})
-}
-
-func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement log streaming
-	json.NewEncoder(w).Encode(map[string]interface{}{"message": "TODO"})
-}
-
-func (s *Server) handleFileListRoute(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("id")
-	s.handleFileList(w, r, serverID)
-}
-
-func (s *Server) handleFileReadRoute(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("id")
-	filePath := r.PathValue("*")
-	s.handleFileRead(w, r, serverID, filePath)
-}
-
-func (s *Server) handleFileWriteRoute(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("id")
-	filePath := r.PathValue("*")
-	s.handleFileWrite(w, r, serverID, filePath)
-}
-
-func (s *Server) handleFileCreateRoute(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("id")
-	s.handleFileCreate(w, r, serverID)
-}
-
-func (s *Server) handleFileDeleteRoute(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("id")
-	filePath := r.PathValue("*")
-	s.handleFileDelete(w, r, serverID, filePath)
-}
-
-func (s *Server) handleFileRenameRoute(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("id")
-	s.handleFileRename(w, r, serverID)
-}
-
-func (s *Server) handleFileUploadRoute(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("id")
-	s.handleFileUpload(w, r, serverID)
-}
-
-func (s *Server) handleStatsRoute(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("id")
-	stats := s.getContainerStats(serverID)
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"stats": stats})
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(data)
 }

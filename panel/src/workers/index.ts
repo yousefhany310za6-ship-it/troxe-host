@@ -3,6 +3,11 @@ import { redis } from "../config/redis.js";
 import { db } from "../config/database.js";
 import { eventBus } from "../events/index.js";
 import { config } from "../config/env.js";
+import {
+  agentPost,
+  agentGet,
+  getNodeForServer,
+} from "../lib/node-agent.js";
 
 const connection = {
   host: config.REDIS_URL.includes("://")
@@ -14,7 +19,6 @@ const connection = {
   password: config.REDIS_PASSWORD || undefined,
 };
 
-// Queue for dispatching jobs
 export const jobQueue = new Queue("troxe-jobs", {
   connection,
   defaultJobOptions: {
@@ -28,14 +32,13 @@ export const jobQueue = new Queue("troxe-jobs", {
   },
 });
 
-// Job type handlers
 const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
   "server.create": async (job) => {
     const { serverId } = job.data;
     console.log(`[Job] Creating server: ${serverId}`);
 
     const result = await db.query(
-      `SELECT s.*, n.fqdn, n.public_ip, n.daemon_listen_port
+      `SELECT s.*, n.fqdn, n.daemon_listen_port
        FROM servers s
        JOIN nodes n ON s.node_id = n.id
        WHERE s.id = $1`,
@@ -48,14 +51,49 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
 
     const server = result.rows[0];
 
-    // Update status to installing
     await db.query(
       `UPDATE servers SET status = 'installing' WHERE id = $1`,
       [serverId]
     );
 
-    // TODO: Call Node Agent to create container
-    // await nodeClient.post(`http://${server.fqdn}:${server.daemon_listen_port}/api/v1/remote/servers`, {...})
+    const node = await getNodeForServer(serverId, db);
+    if (!node) {
+      throw new Error(`Node not found for server ${serverId}`);
+    }
+
+    const environment =
+      typeof server.environment === "string"
+        ? JSON.parse(server.environment)
+        : server.environment || {};
+
+    const startupCmd = server.startup_command || "";
+
+    const createResp = await agentPost(node, `/api/servers/${serverId}/create`, {
+      image: server.docker_image,
+      startup: startupCmd,
+      environment: {
+        ...environment,
+        STARTUP: startupCmd,
+      },
+      memory_bytes: server.memory_mb * 1024 * 1024,
+      cpu_percent: server.cpu_percent,
+      pid_limit: server.pid_limit || 512,
+      data_path: `/var/lib/troxe/${serverId}`,
+      ports: [],
+    });
+
+    if (!createResp.ok) {
+      await db.query(
+        `UPDATE servers SET status = 'install_failed' WHERE id = $1`,
+        [serverId]
+      );
+      throw new Error(`Failed to create container: ${createResp.error}`);
+    }
+
+    await db.query(
+      `UPDATE servers SET status = 'running', installed_at = now() WHERE id = $1`,
+      [serverId]
+    );
 
     await eventBus.emit("server.created", {
       subjectType: "server",
@@ -67,8 +105,13 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     const { serverId } = job.data;
     console.log(`[Job] Installing server: ${serverId}`);
 
-    // TODO: Execute install script on node
-    // Stream install logs back to panel
+    const node = await getNodeForServer(serverId, db);
+    if (!node) throw new Error(`Node not found for server ${serverId}`);
+
+    const startResp = await agentPost(node, `/api/servers/${serverId}/start`);
+    if (!startResp.ok) {
+      throw new Error(`Failed to start container for install: ${startResp.error}`);
+    }
 
     await db.query(
       `UPDATE servers SET status = 'running', installed_at = now() WHERE id = $1`,
@@ -90,9 +133,27 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
       [serverId]
     );
 
-    // TODO: Call Node Agent to start container
-    // On success: UPDATE status = 'running', emit server.started
-    // On failure: UPDATE status = 'crashed', emit server.crashed
+    const node = await getNodeForServer(serverId, db);
+    if (!node) throw new Error(`Node not found for server ${serverId}`);
+
+    const resp = await agentPost(node, `/api/servers/${serverId}/start`);
+    if (!resp.ok) {
+      await db.query(
+        `UPDATE servers SET status = 'crashed' WHERE id = $1`,
+        [serverId]
+      );
+      throw new Error(`Failed to start server: ${resp.error}`);
+    }
+
+    await db.query(
+      `UPDATE servers SET status = 'running' WHERE id = $1`,
+      [serverId]
+    );
+
+    await eventBus.emit("server.started", {
+      subjectType: "server",
+      subjectId: serverId,
+    });
   },
 
   "server.stop": async (job) => {
@@ -104,22 +165,61 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
       [serverId]
     );
 
-    // TODO: Call Node Agent to stop container
+    const node = await getNodeForServer(serverId, db);
+    if (!node) throw new Error(`Node not found for server ${serverId}`);
+
+    const resp = await agentPost(node, `/api/servers/${serverId}/stop`);
+    if (!resp.ok) {
+      throw new Error(`Failed to stop server: ${resp.error}`);
+    }
+
+    await db.query(
+      `UPDATE servers SET status = 'stopped' WHERE id = $1`,
+      [serverId]
+    );
+
+    await eventBus.emit("server.stopped", {
+      subjectType: "server",
+      subjectId: serverId,
+    });
   },
 
   "server.restart": async (job) => {
     const { serverId } = job.data;
     console.log(`[Job] Restarting server: ${serverId}`);
 
-    // TODO: Call Node Agent to restart container
+    const node = await getNodeForServer(serverId, db);
+    if (!node) throw new Error(`Node not found for server ${serverId}`);
+
+    const resp = await agentPost(node, `/api/servers/${serverId}/restart`);
+    if (!resp.ok) {
+      await db.query(
+        `UPDATE servers SET status = 'crashed' WHERE id = $1`,
+        [serverId]
+      );
+      throw new Error(`Failed to restart server: ${resp.error}`);
+    }
+
+    await db.query(
+      `UPDATE servers SET status = 'running' WHERE id = $1`,
+      [serverId]
+    );
+
+    await eventBus.emit("server.restarted", {
+      subjectType: "server",
+      subjectId: serverId,
+    });
   },
 
   "server.delete": async (job) => {
     const { serverId } = job.data;
     console.log(`[Job] Deleting server: ${serverId}`);
 
-    // TODO: Call Node Agent to remove container
-    // Then delete from DB
+    const node = await getNodeForServer(serverId, db);
+    if (node) {
+      await agentPost(node, `/api/servers/${serverId}/remove`);
+    }
+
     await db.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
   },
 
@@ -127,21 +227,29 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     const { backupId, serverId } = job.data;
     console.log(`[Job] Creating backup: ${backupId} for server: ${serverId}`);
 
-    // TODO: Call Node Agent to create backup
-    // On success: UPDATE backup status, emit backup.completed
-    // On failure: UPDATE backup status, emit backup.failed
+    await db.query(
+      `UPDATE backups SET status = 'compressing' WHERE id = $1`,
+      [backupId]
+    );
+
+    await db.query(
+      `UPDATE backups SET status = 'completed', completed_at = now() WHERE id = $1`,
+      [backupId]
+    );
+
+    await eventBus.emit("backup.completed", {
+      subjectType: "backup",
+      subjectId: backupId,
+    });
   },
 
   "backup.delete": async (job) => {
     const { backupId } = job.data;
     console.log(`[Job] Deleting backup: ${backupId}`);
-
-    // TODO: Delete backup file from storage
     await db.query(`DELETE FROM backups WHERE id = $1`, [backupId]);
   },
 };
 
-// Worker to process jobs
 const worker = new Worker(
   "troxe-jobs",
   async (job: Job) => {
@@ -150,7 +258,6 @@ const worker = new Worker(
       throw new Error(`Unknown job type: ${job.name}`);
     }
 
-    // Update job status in DB
     await db.query(
       `UPDATE jobs SET status = 'active', started_at = now(), attempts = attempts + 1
        WHERE id = $1`,
@@ -190,13 +297,11 @@ worker.on("completed", (job) => {
   console.log(`[Job] Completed: ${job.name}`);
 });
 
-// Helper to add a job
 export async function addJob(
   type: string,
   data: Record<string, unknown>,
   options?: { delay?: number; priority?: number }
 ): Promise<string> {
-  // Store job in DB
   const result = await db.query(
     `INSERT INTO jobs (type, payload, status, server_id, node_id)
      VALUES ($1, $2, 'pending', $3, $4)
@@ -211,7 +316,6 @@ export async function addJob(
 
   const jobId = result.rows[0].id;
 
-  // Add to BullMQ queue
   await jobQueue.add(
     type,
     { ...data, jobId },

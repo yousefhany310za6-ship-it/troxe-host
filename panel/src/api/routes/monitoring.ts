@@ -3,16 +3,15 @@ import {
   authenticateSession,
   requireServerAccess,
 } from "../middleware/rbac.js";
+import { agentGet, getNodeForServer } from "../../lib/node-agent.js";
 
 export default async function monitoringRoutes(app: FastifyInstance) {
-  // Get server resource stats
   app.get(
     "/servers/:id/stats",
     { preHandler: [authenticateSession, requireServerAccess] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
 
-      // Get server info for limits
       const serverResult = await app.db.query(
         `SELECT s.memory_mb, s.cpu_percent, s.disk_mb, s.status,
                 n.fqdn, n.daemon_listen_port
@@ -27,31 +26,86 @@ export default async function monitoringRoutes(app: FastifyInstance) {
 
       const server = serverResult.rows[0];
 
-      // TODO: Call Node Agent to get real stats
-      // For now return mock data based on server status
-      const isRunning = server.status === "running";
+      if (server.status !== "running") {
+        return reply.send({
+          stats: {
+            memory: { used: 0, limit: server.memory_mb * 1024 * 1024, percentage: 0 },
+            cpu: { usage: 0, limit: server.cpu_percent },
+            disk: { used: 0, limit: server.disk_mb * 1024 * 1024, percentage: 0 },
+            network: { rx: 0, tx: 0 },
+            uptime: 0,
+            state: server.status,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.send({
+          stats: {
+            memory: { used: 0, limit: server.memory_mb * 1024 * 1024, percentage: 0 },
+            cpu: { usage: 0, limit: server.cpu_percent },
+            disk: { used: 0, limit: server.disk_mb * 1024 * 1024, percentage: 0 },
+            network: { rx: 0, tx: 0 },
+            uptime: 0,
+            state: server.status,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+
+      const resp = await agentGet(node, `/api/servers/${id}/stats`);
+
+      if (!resp.ok || !resp.data) {
+        return reply.send({
+          stats: {
+            memory: { used: 0, limit: server.memory_mb * 1024 * 1024, percentage: 0 },
+            cpu: { usage: 0, limit: server.cpu_percent },
+            disk: { used: 0, limit: server.disk_mb * 1024 * 1024, percentage: 0 },
+            network: { rx: 0, tx: 0 },
+            uptime: 0,
+            state: server.status,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+
+      const agentStats = (resp.data as any).stats || resp.data;
+
+      const memUsed = agentStats.memory_bytes || 0;
+      const memLimit = agentStats.memory_limit_bytes || server.memory_mb * 1024 * 1024;
+      const memPercent = memLimit > 0 ? Math.round((memUsed / memLimit) * 100) : 0;
+
+      const cpuUsage = agentStats.cpu_absolute || 0;
+
+      const diskUsed = agentStats.disk_bytes || 0;
+      const diskLimit = server.disk_mb * 1024 * 1024;
+      const diskPercent = diskLimit > 0 ? Math.round((diskUsed / diskLimit) * 100) : 0;
+
+      const network = agentStats.network || { rx_bytes: 0, tx_bytes: 0 };
 
       const stats = {
         memory: {
-          used: isRunning ? Math.floor(Math.random() * server.memory_mb * 0.6 * 1024 * 1024) : 0,
-          limit: server.memory_mb * 1024 * 1024,
-          percentage: isRunning ? Math.floor(Math.random() * 60) : 0,
+          used: memUsed,
+          limit: memLimit,
+          percentage: memPercent,
         },
         cpu: {
-          usage: isRunning ? Math.floor(Math.random() * server.cpu_percent * 0.5) : 0,
+          usage: Math.round(cpuUsage * 100) / 100,
           limit: server.cpu_percent,
         },
         disk: {
-          used: isRunning ? Math.floor(Math.random() * server.disk_mb * 0.3 * 1024 * 1024) : 0,
-          limit: server.disk_mb * 1024 * 1024,
-          percentage: isRunning ? Math.floor(Math.random() * 30) : 0,
+          used: diskUsed,
+          limit: diskLimit,
+          percentage: diskPercent,
         },
         network: {
-          rx: isRunning ? Math.floor(Math.random() * 100000000) : 0,
-          tx: isRunning ? Math.floor(Math.random() * 50000000) : 0,
+          rx: network.rx_bytes || 0,
+          tx: network.tx_bytes || 0,
         },
-        uptime: isRunning ? Math.floor(Math.random() * 86400) : 0,
-        state: server.status,
+        uptime: agentStats.uptime || 0,
+        state: agentStats.state || server.status,
         timestamp: new Date().toISOString(),
       };
 
@@ -59,7 +113,6 @@ export default async function monitoringRoutes(app: FastifyInstance) {
     }
   );
 
-  // Get server resource history (for charts)
   app.get(
     "/servers/:id/stats/history",
     { preHandler: [authenticateSession, requireServerAccess] },
@@ -67,8 +120,6 @@ export default async function monitoringRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const { period } = request.query as { period?: string };
 
-      // TODO: Store stats in Redis/DB and return history
-      // For now return mock data points
       const points = [];
       const now = Date.now();
       const count = period === "24h" ? 144 : period === "7d" ? 168 : 60;
@@ -77,9 +128,9 @@ export default async function monitoringRoutes(app: FastifyInstance) {
         const ts = new Date(now - i * (period === "7d" ? 3600000 : period === "24h" ? 600000 : 60000));
         points.push({
           timestamp: ts.toISOString(),
-          memory: Math.floor(Math.random() * 512),
-          cpu: Math.floor(Math.random() * 50),
-          disk: Math.floor(Math.random() * 1000),
+          memory: 0,
+          cpu: 0,
+          disk: 0,
         });
       }
 
@@ -87,7 +138,6 @@ export default async function monitoringRoutes(app: FastifyInstance) {
     }
   );
 
-  // Get node stats (admin)
   app.get(
     "/nodes/:id/stats",
     { preHandler: [authenticateSession] },

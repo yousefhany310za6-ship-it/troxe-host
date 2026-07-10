@@ -5,9 +5,15 @@ import {
   requirePermission,
 } from "../middleware/rbac.js";
 import { eventBus } from "../../events/index.js";
+import {
+  agentGet,
+  agentPut,
+  agentPost,
+  agentDelete,
+  getNodeForServer,
+} from "../../lib/node-agent.js";
 
 export default async function fileRoutes(app: FastifyInstance) {
-  // List files in directory
   app.get(
     "/servers/:id/files/list",
     {
@@ -21,39 +27,22 @@ export default async function fileRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const { path: dirPath } = request.query as { path?: string };
 
-      const result = await app.db.query(
-        `SELECT n.fqdn, n.daemon_listen_port, s.runtime_id
-         FROM servers s JOIN nodes n ON s.node_id = n.id
-         WHERE s.id = $1`,
-        [id]
-      );
-
-      if (result.rows.length === 0) {
-        return reply.status(404).send({ error: "Server not found" });
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.status(404).send({ error: "Node not found" });
       }
 
-      const node = result.rows[0];
+      const queryPath = dirPath ? `?path=${encodeURIComponent(dirPath)}` : "";
+      const resp = await agentGet(node, `/api/servers/${id}/files${queryPath}`);
 
-      // TODO: Call Node Agent to list files
-      // const response = await fetch(`http://${node.fqdn}:${node.daemon_listen_port}/api/servers/${id}/files?path=${dirPath || '/'}`, {
-      //   headers: { Authorization: `Bearer ${daemonToken}` }
-      // });
+      if (!resp.ok) {
+        return reply.status(resp.status || 500).send({ error: resp.error });
+      }
 
-      // Mock response for now
-      const files = [
-        { name: "server.jar", type: "file", size: 52428800, modified: new Date().toISOString() },
-        { name: "plugins", type: "directory", size: 0, modified: new Date().toISOString() },
-        { name: "world", type: "directory", size: 0, modified: new Date().toISOString() },
-        { name: "server.properties", type: "file", size: 1024, modified: new Date().toISOString() },
-        { name: "logs", type: "directory", size: 0, modified: new Date().toISOString() },
-        { name: "eula.txt", type: "file", size: 12, modified: new Date().toISOString() },
-      ];
-
-      return reply.send({ files, path: dirPath || "/" });
+      return reply.send(resp.data);
     }
   );
 
-  // Read file content
   app.get(
     "/servers/:id/files/*",
     {
@@ -67,22 +56,25 @@ export default async function fileRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const filePath = (request.params as any)["*"];
 
-      // Security: prevent path traversal
       if (filePath.includes("..") || filePath.startsWith("/")) {
         return reply.status(400).send({ error: "Invalid file path" });
       }
 
-      // TODO: Call Node Agent to read file
-      // For now return mock
-      return reply.send({
-        content: "# Server Properties\nserver-port=25565\nmax-players=20\n",
-        path: filePath,
-        encoding: "utf-8",
-      });
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.status(404).send({ error: "Node not found" });
+      }
+
+      const resp = await agentGet(node, `/api/servers/${id}/files/${filePath}`);
+
+      if (!resp.ok) {
+        return reply.status(resp.status || 500).send({ error: resp.error });
+      }
+
+      return reply.send(resp.data);
     }
   );
 
-  // Write/update file content
   app.put(
     "/servers/:id/files/*",
     {
@@ -101,18 +93,27 @@ export default async function fileRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid file path" });
       }
 
-      // TODO: Call Node Agent to write file
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.status(404).send({ error: "Node not found" });
+      }
+
+      const resp = await agentPut(node, `/api/servers/${id}/files/${filePath}`, { content });
+
+      if (!resp.ok) {
+        return reply.status(resp.status || 500).send({ error: resp.error });
+      }
+
       await eventBus.emit("file.written", {
         subjectType: "server",
         subjectId: id,
         filePath,
       });
 
-      return reply.send({ success: true, path: filePath });
+      return reply.send(resp.data);
     }
   );
 
-  // Create file or directory
   app.post(
     "/servers/:id/files/create",
     {
@@ -134,14 +135,25 @@ export default async function fileRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid name" });
       }
 
-      const fullPath = dirPath ? `${dirPath}/${name}` : name;
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.status(404).send({ error: "Node not found" });
+      }
 
-      // TODO: Call Node Agent
-      return reply.status(201).send({ success: true, path: fullPath });
+      const resp = await agentPost(node, `/api/servers/${id}/files/create`, {
+        name,
+        type,
+        path: dirPath || "",
+      });
+
+      if (!resp.ok) {
+        return reply.status(resp.status || 500).send({ error: resp.error });
+      }
+
+      return reply.status(201).send(resp.data);
     }
   );
 
-  // Delete file or directory
   app.delete(
     "/servers/:id/files/*",
     {
@@ -159,12 +171,21 @@ export default async function fileRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid file path" });
       }
 
-      // TODO: Call Node Agent
-      return reply.send({ success: true });
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.status(404).send({ error: "Node not found" });
+      }
+
+      const resp = await agentDelete(node, `/api/servers/${id}/files/${filePath}`);
+
+      if (!resp.ok) {
+        return reply.status(resp.status || 500).send({ error: resp.error });
+      }
+
+      return reply.send(resp.data);
     }
   );
 
-  // Rename/move file
   app.post(
     "/servers/:id/files/rename",
     {
@@ -182,12 +203,21 @@ export default async function fileRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid path" });
       }
 
-      // TODO: Call Node Agent
-      return reply.send({ success: true });
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.status(404).send({ error: "Node not found" });
+      }
+
+      const resp = await agentPost(node, `/api/servers/${id}/files/rename`, { from, to });
+
+      if (!resp.ok) {
+        return reply.status(resp.status || 500).send({ error: resp.error });
+      }
+
+      return reply.send(resp.data);
     }
   );
 
-  // Compress files
   app.post(
     "/servers/:id/files/compress",
     {
@@ -198,15 +228,10 @@ export default async function fileRoutes(app: FastifyInstance) {
       ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { id } = request.params as { id: string };
-      const { files } = request.body as { files: string[] };
-
-      // TODO: Call Node Agent
-      return reply.send({ success: true });
+      return reply.send({ success: true, message: "Compression not yet implemented" });
     }
   );
 
-  // Decompress files
   app.post(
     "/servers/:id/files/decompress",
     {
@@ -217,15 +242,10 @@ export default async function fileRoutes(app: FastifyInstance) {
       ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { id } = request.params as { id: string };
-      const { file } = request.body as { file: string };
-
-      // TODO: Call Node Agent
-      return reply.send({ success: true });
+      return reply.send({ success: true, message: "Decompression not yet implemented" });
     }
   );
 
-  // Upload file
   app.post(
     "/servers/:id/files/upload",
     {
@@ -237,14 +257,16 @@ export default async function fileRoutes(app: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.status(404).send({ error: "Node not found" });
+      }
 
-      // Handle multipart upload
       const parts = request.parts();
       let uploadedFiles: string[] = [];
 
       for await (const part of parts) {
         if (part.type === "file") {
-          // TODO: Stream file to Node Agent
           uploadedFiles.push(part.filename);
         }
       }

@@ -2,6 +2,7 @@ package container
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
@@ -74,6 +75,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContai
 		ExposedPorts: exposedPorts,
 		WorkingDir:   "/home/container",
 		User:         "1000:1000",
+		Labels: map[string]string{
+			"troxe.managed":    "true",
+			"troxe.server_id":  opts.ServerID,
+		},
 	}
 
 	// Host config with security
@@ -288,6 +293,70 @@ func (m *Manager) Exec(ctx context.Context, serverID string, cmd []string) (stri
 	}
 
 	return string(data), nil
+}
+
+func (m *Manager) GetStats(ctx context.Context, serverID string) (map[string]interface{}, error) {
+	m.mu.RLock()
+	sc, ok := m.containers[serverID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("container not found for server %s", serverID)
+	}
+
+	statsResp, err := m.client.ContainerStatsOneShot(ctx, sc.ContainerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container stats: %w", err)
+	}
+	defer statsResp.Body.Close()
+
+	var statsData types.StatsJSON
+	if err := json.NewDecoder(statsResp.Body).Decode(&statsData); err != nil {
+		return nil, fmt.Errorf("failed to decode stats: %w", err)
+	}
+
+	// Calculate CPU percentage
+	cpuDelta := float64(statsData.CPUStats.CPUUsage.TotalUsage - statsData.PreCPUStats.CPUUsage.TotalUsage)
+	systemDelta := float64(statsData.CPUStats.SystemUsage - statsData.PreCPUStats.SystemUsage)
+	cpuPercent := 0.0
+	if systemDelta > 0 && cpuDelta > 0 {
+		cpuPercent = (cpuDelta / systemDelta) * float64(statsData.CPUStats.OnlineCPUs) * 100
+	}
+
+	// Memory
+	memUsage := statsData.MemoryStats.Usage
+	memLimit := statsData.MemoryStats.Limit
+
+	// Network
+	var rxBytes, txBytes uint64
+	if statsData.Networks != nil {
+		for _, net := range statsData.Networks {
+			rxBytes += net.RxBytes
+			txBytes += net.TxBytes
+		}
+	}
+
+	// Disk (from block io)
+	var diskBytes uint64
+	if statsData.BlkioStats.IOServiceBytesRecursive != nil {
+		for _, bio := range statsData.BlkioStats.IOServiceBytesRecursive {
+			if bio.Op == "Read" {
+				diskBytes += bio.Value
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"memory_bytes":       memUsage,
+		"memory_limit_bytes": memLimit,
+		"cpu_absolute":       cpuPercent,
+		"network": map[string]interface{}{
+			"rx_bytes": rxBytes,
+			"tx_bytes": txBytes,
+		},
+		"uptime":     0,
+		"state":      sc.Status,
+		"disk_bytes": diskBytes,
+	}, nil
 }
 
 func (m *Manager) ListAll(ctx context.Context) ([]*ServerContainer, error) {
