@@ -118,7 +118,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContai
 		exposedPorts[pu] = struct{}{}
 	}
 
-	// Container config
+	// Container config — run startup command via shell so env vars expand
 	containerConfig := &container.Config{
 		Image:        opts.Image,
 		Env:          env,
@@ -129,6 +129,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContai
 			"troxe.managed":    "true",
 			"troxe.server_id":  opts.ServerID,
 		},
+	}
+	if opts.Startup != "" {
+		containerConfig.Cmd = []string{"/bin/sh", "-c", opts.Startup}
 	}
 
 	// Host config with security
