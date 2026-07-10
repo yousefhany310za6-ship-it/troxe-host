@@ -71,10 +71,11 @@ export default function ServerDetailPage({
   const pathname = usePathname();
   const [powerLoading, setPowerLoading] = useState<string | null>(null);
 
-  const { data: server, error, isLoading } = useSWR<ServerDetail>(
+  const { data, error, isLoading } = useSWR<{ server: ServerDetail }>(
     `/api/v1/servers/${id}`,
-    (url: string) => fetchApi<ServerDetail>(url)
+    (url: string) => fetchApi<{ server: ServerDetail }>(url)
   );
+  const server = data?.server;
 
   const activeTab = pathname === `/dashboard/servers/${id}`
     ? ""
