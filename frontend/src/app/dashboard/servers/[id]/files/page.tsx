@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import useSWR from "swr";
 import { fetchApi } from "@/lib/api";
 import {
@@ -16,6 +16,9 @@ import {
   Pencil,
   Trash2,
   ChevronRight,
+  X,
+  Save,
+  Loader2,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,6 +28,11 @@ interface FileEntry {
   type: "file" | "directory";
   size: number;
   modified: string;
+}
+
+interface FileContent {
+  content: string;
+  path: string;
 }
 
 function formatBytes(bytes: number) {
@@ -38,8 +46,8 @@ function getFileIcon(entry: FileEntry) {
   if (entry.type === "directory") return Folder;
   const ext = entry.name.split(".").pop()?.toLowerCase();
   if (["txt", "log", "md"].includes(ext || "")) return FileText;
-  if (["js", "ts", "json", "yml", "yaml", "toml", "cfg", "conf", "ini", "sh"].includes(ext || "")) return FileCode;
-  if (["png", "jpg", "jpeg", "gif", "svg", "ico"].includes(ext || "")) return FileImage;
+  if (["js", "ts", "jsx", "tsx", "json", "yml", "yaml", "toml", "cfg", "conf", "ini", "sh", "env", "css", "html"].includes(ext || "")) return FileCode;
+  if (["png", "jpg", "jpeg", "gif", "svg", "ico", "webp"].includes(ext || "")) return FileImage;
   if (["zip", "tar", "gz", "rar", "7z"].includes(ext || "")) return FileArchive;
   return File;
 }
@@ -54,6 +62,12 @@ export default function FilesPage({
   const [showNewFile, setShowNewFile] = useState(false);
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [newName, setNewName] = useState("");
+  const [editingFile, setEditingFile] = useState<string | null>(null);
+  const [fileContent, setFileContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [loadingFile, setLoadingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { data, error, isLoading, mutate } = useSWR<{ files: FileEntry[] }>(
     `/api/v1/servers/${id}/files/list?path=${encodeURIComponent(path)}`,
@@ -70,19 +84,56 @@ export default function FilesPage({
   function handleClick(entry: FileEntry) {
     if (entry.type === "directory") {
       setPath(path ? `${path}/${entry.name}` : entry.name);
+    } else {
+      openEditor(entry.name);
+    }
+  }
+
+  function fullPath(name: string) {
+    return path ? `${path}/${name}` : name;
+  }
+
+  async function openEditor(name: string) {
+    const filePath = fullPath(name);
+    setLoadingFile(true);
+    setEditingFile(filePath);
+    try {
+      const data = await fetchApi<FileContent>(
+        `/api/v1/servers/${id}/files/${filePath}`
+      );
+      setFileContent(data.content || "");
+    } catch {
+      setFileContent("# Error loading file");
+    } finally {
+      setLoadingFile(false);
+    }
+  }
+
+  async function saveFile() {
+    if (!editingFile) return;
+    setSaving(true);
+    try {
+      await fetchApi(`/api/v1/servers/${id}/files/${editingFile}`, {
+        method: "PUT",
+        body: JSON.stringify({ content: fileContent }),
+      });
+      setEditingFile(null);
+      mutate();
+    } catch {
+      alert("Failed to save file");
+    } finally {
+      setSaving(false);
     }
   }
 
   async function handleDelete(name: string) {
     if (!confirm(`Delete "${name}"?`)) return;
-    const filePath = path ? `${path}/${name}` : name;
     try {
-      await fetchApi(`/api/v1/servers/${id}/files/${filePath}`, {
+      await fetchApi(`/api/v1/servers/${id}/files/${fullPath(name)}`, {
         method: "DELETE",
       });
       mutate();
-    } catch {
-    }
+    } catch {}
   }
 
   async function handleCreateFile() {
@@ -95,8 +146,7 @@ export default function FilesPage({
       setNewName("");
       setShowNewFile(false);
       mutate();
-    } catch {
-    }
+    } catch {}
   }
 
   async function handleCreateFolder() {
@@ -109,12 +159,102 @@ export default function FilesPage({
       setNewName("");
       setShowNewFolder(false);
       mutate();
-    } catch {
-    }
+    } catch {}
   }
 
+  const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    const formData = new FormData();
+    for (let i = 0; i < fileList.length; i++) {
+      formData.append("files", fileList[i]);
+    }
+    if (path) formData.append("path", path);
+
+    try {
+      await fetchApi(`/api/v1/servers/${id}/files/upload`, {
+        method: "POST",
+        body: formData as any,
+      });
+      mutate();
+    } catch {
+      alert("Upload failed");
+    }
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, [id, path, mutate]);
+
+  // File editor modal
+  if (editingFile) {
+    return (
+      <div className="flex flex-col h-[70vh] md:h-full">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleUpload}
+        />
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <FileCode className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+            <h1 className="text-2xl font-bold truncate">{editingFile}</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setEditingFile(null)}>
+              <X className="h-4 w-4 mr-1.5" />
+              Close
+            </Button>
+            <Button size="sm" onClick={saveFile} disabled={saving}>
+              {saving ? (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4 mr-1.5" />
+              )}
+              Save
+            </Button>
+          </div>
+        </div>
+        <Card className="flex-1 flex flex-col overflow-hidden min-h-0">
+          {loadingFile ? (
+            <div className="flex-1 flex items-center justify-center text-muted-foreground">
+              <Loader2 className="h-6 w-6 animate-spin mr-2" />
+              Loading...
+            </div>
+          ) : (
+            <textarea
+              ref={textareaRef}
+              value={fileContent}
+              onChange={(e) => setFileContent(e.target.value)}
+              className="flex-1 w-full bg-[#0a0a0a] text-[#d4d4d4] p-4 font-mono text-sm resize-none focus:outline-none min-h-0"
+              spellCheck={false}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                  e.preventDefault();
+                  saveFile();
+                }
+              }}
+            />
+          )}
+        </Card>
+        <p className="text-xs text-muted-foreground mt-2">
+          Press Ctrl+S to save
+        </p>
+      </div>
+    );
+  }
+
+  // File listing
   return (
     <div className="space-y-6">
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleUpload}
+      />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Folder className="h-5 w-5 text-muted-foreground" />
@@ -129,7 +269,7 @@ export default function FilesPage({
             <FolderPlus className="h-4 w-4 mr-1.5" />
             New Folder
           </Button>
-          <Button size="sm">
+          <Button size="sm" onClick={() => fileInputRef.current?.click()}>
             <Upload className="h-4 w-4 mr-1.5" />
             Upload
           </Button>
@@ -245,9 +385,16 @@ export default function FilesPage({
                       </td>
                       <td className="px-6 py-3">
                         <div className="flex items-center justify-end gap-1">
-                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
+                          {entry.type === "file" && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0"
+                              onClick={() => openEditor(entry.name)}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"

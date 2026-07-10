@@ -11,6 +11,7 @@ import {
   agentPost,
   agentDelete,
   getNodeForServer,
+  signAgentJWT,
 } from "../../lib/node-agent.js";
 
 export default async function fileRoutes(app: FastifyInstance) {
@@ -262,19 +263,27 @@ export default async function fileRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Node not found" });
       }
 
-      const parts = request.parts();
-      let uploadedFiles: string[] = [];
+      const token = signAgentJWT("system");
+      const agentUrl = `http://${node.fqdn}:${node.daemon_listen_port}/api/servers/${id}/upload`;
 
-      for await (const part of parts) {
-        if (part.type === "file") {
-          uploadedFiles.push(part.filename);
-        }
-      }
+      const contentType = request.headers["content-type"] || "";
+      const contentLength = request.headers["content-length"];
 
-      return reply.send({
-        success: true,
-        files: uploadedFiles,
+      // Forward the raw multipart body to the agent
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": contentType,
+      };
+      if (contentLength) headers["Content-Length"] = contentLength;
+
+      const resp = await fetch(agentUrl, {
+        method: "POST",
+        headers,
+        body: request.raw,
       });
+
+      const data = await resp.json().catch(() => ({}));
+      return reply.status(resp.status).send(data);
     }
   );
 }

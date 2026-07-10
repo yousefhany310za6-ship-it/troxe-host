@@ -286,6 +286,26 @@ func (m *Manager) GetStatus(ctx context.Context, serverID string) (string, error
 	return inspect.State.Status, nil
 }
 
+// StreamLogs opens a live-following log stream. The returned reader yields new
+// log lines as they appear until the context is cancelled or the container stops.
+func (m *Manager) StreamLogs(ctx context.Context, serverID string) (io.ReadCloser, error) {
+	m.mu.RLock()
+	sc, ok := m.containers[serverID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("container not found for server %s", serverID)
+	}
+
+	options := container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Tail:       "50",
+	}
+
+	return m.client.ContainerLogs(ctx, sc.ContainerID, options)
+}
+
 func (m *Manager) GetLogs(ctx context.Context, serverID string, tail int) (string, error) {
 	m.mu.RLock()
 	sc, ok := m.containers[serverID]

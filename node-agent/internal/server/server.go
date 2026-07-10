@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/troxe-host/node-agent/internal/auth"
 	"github.com/troxe-host/node-agent/internal/config"
 	troxcontainer "github.com/troxe-host/node-agent/internal/container"
@@ -423,21 +426,35 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) streamLogs(client *WSClient) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			logs, err := s.containerMgr.GetLogs(ctx, client.serverID, 10)
-			if err == nil && len(logs) > 0 {
-				client.sendJSON(map[string]interface{}{
-					"type": "output",
-					"data": logs,
-				})
-			}
-			time.Sleep(2 * time.Second)
+	reader, err := s.containerMgr.StreamLogs(ctx, client.serverID)
+	if err != nil {
+		client.sendJSON(map[string]interface{}{
+			"type": "output",
+			"data": fmt.Sprintf("[Panel] Log stream error: %v\n", err),
+		})
+		return
+	}
+	defer reader.Close()
+
+	// Demux Docker's multiplexed stdout/stderr via stdcopy into a pipe,
+	// then send each line over the WebSocket.
+	pr, pw := io.Pipe()
+	go func() {
+		stdcopy.StdCopy(pw, pw, reader)
+		pw.Close()
+	}()
+
+	scanner := bufio.NewScanner(pr)
+	for scanner.Scan() {
+		line := scanner.Text() + "\n"
+		if wsIsOpen(client) {
+			client.sendJSON(map[string]interface{}{
+				"type": "output",
+				"data": line,
+			})
 		}
 	}
 }
@@ -611,4 +628,10 @@ func (s *Server) handleStatsRoute(w http.ResponseWriter, r *http.Request) {
 	stats := s.getContainerStats(serverID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"stats": stats})
+}
+
+func wsIsOpen(client *WSClient) bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return !client.closed
 }

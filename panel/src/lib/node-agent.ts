@@ -17,7 +17,7 @@ interface AgentResponse<T = any> {
 
 const daemonToken = config.NODE_DEFAULT_TOKEN;
 
-function signAgentJWT(
+export function signAgentJWT(
   serverId: string,
   permissions: Record<string, boolean> = {}
 ): string {
