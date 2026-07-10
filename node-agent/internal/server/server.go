@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +21,7 @@ type Server struct {
 	cfg           *config.Config
 	containerMgr  *troxcontainer.Manager
 	httpServer    *http.Server
+	cancel        context.CancelFunc
 	mu            sync.RWMutex
 }
 
@@ -88,11 +91,72 @@ func (s *Server) Start() error {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	// Start heartbeat sender to the panel
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	go s.startHeartbeat(ctx)
+
 	log.Printf("Node Agent listening on port %d", s.cfg.ListenPort)
 	return s.httpServer.ListenAndServe()
 }
 
+func (s *Server) startHeartbeat(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	s.sendHeartbeat()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.sendHeartbeat()
+		}
+	}
+}
+
+func (s *Server) sendHeartbeat() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	memMb, diskMb := s.containerMgr.GetAllocatedStats(ctx)
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"stats": map[string]int64{
+			"allocatedMemoryMb": memMb,
+			"allocatedDiskMb":   diskMb,
+		},
+	})
+	if err != nil {
+		return
+	}
+
+	url := strings.TrimRight(s.cfg.PanelURL, "/") + "/api/v1/remote/heartbeat"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		log.Printf("[heartbeat] failed to build request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.cfg.DaemonToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("[heartbeat] failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[heartbeat] unexpected status %d", resp.StatusCode)
+	}
+}
+
 func (s *Server) Shutdown() {
+	if s.cancel != nil {
+		s.cancel()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	s.httpServer.Shutdown(ctx)

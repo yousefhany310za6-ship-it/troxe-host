@@ -1,19 +1,23 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { validateApiKey } from "./auth.js";
 
-// Extend Fastify types
-declare module "fastify" {
-  interface FastifyRequest {
-    user?: {
-      id: string;
-      userId: string;
-      username: string;
-      email: string;
-      rootAdmin: boolean;
-      permissions: Record<string, boolean>;
-      isClient: boolean;
-      isAdmin: boolean;
-    };
+export interface TroxeUser {
+  id: string;
+  userId: string;
+  username: string;
+  email: string;
+  rootAdmin: boolean;
+  totpEnabled?: boolean;
+  permissions: Record<string, boolean>;
+  isClient: boolean;
+  isAdmin: boolean;
+}
+
+// Type the authenticated user via @fastify/jwt's declaration merging so that
+// both session and API-key authentication share a single `request.user` type.
+declare module "@fastify/jwt" {
+  interface FastifyJWT {
+    user: TroxeUser;
   }
 }
 
@@ -30,7 +34,7 @@ export async function authenticateSession(
 
     const decoded = request.server.jwt.verify<{ userId: string }>(token);
     const result = await request.server.db.query(
-      `SELECT id, username, email, root_admin, suspended FROM users WHERE id = $1`,
+      `SELECT id, username, email, root_admin, totp_enabled, suspended FROM users WHERE id = $1`,
       [decoded.userId]
     );
 
@@ -45,6 +49,7 @@ export async function authenticateSession(
       username: user.username,
       email: user.email,
       rootAdmin: user.root_admin,
+      totpEnabled: user.totp_enabled,
       permissions: {},
       isClient: true,
       isAdmin: user.root_admin,

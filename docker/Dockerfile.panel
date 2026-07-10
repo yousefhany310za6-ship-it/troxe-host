@@ -4,6 +4,7 @@ WORKDIR /app
 
 # Copy workspace root
 COPY package.json package-lock.json* ./
+COPY tsconfig.base.json ./tsconfig.base.json
 COPY shared/package.json shared/
 COPY panel/package.json panel/
 
@@ -14,11 +15,8 @@ RUN npm install --workspace=panel
 COPY shared/ shared/
 COPY panel/ panel/
 
-# Build shared
+# Build shared (the panel itself runs via tsx in production)
 RUN npm run build --workspace=shared
-
-# Build panel
-RUN npm run build --workspace=panel
 
 # Production stage
 FROM node:22-alpine AS production
@@ -28,16 +26,16 @@ WORKDIR /app
 RUN apk add --no-cache dumb-init
 
 # Create non-root user
-RUN addgroup -g 1000 -S troxe && \
-    adduser -u 1000 -S troxe -G troxe
+RUN addgroup -S troxe && \
+    adduser -S troxe -G troxe
 
-# Copy built artifacts
+# Copy built shared artifacts + dependencies + panel source
 COPY --from=builder /app/shared/dist shared/dist
 COPY --from=builder /app/shared/package.json shared/
-COPY --from=builder /app/panel/dist panel/dist
-COPY --from=builder /app/panel/package.json panel/
 COPY --from=builder /app/node_modules node_modules
 COPY --from=builder /app/panel/node_modules panel/node_modules
+COPY panel/src panel/src
+COPY panel/package.json panel/package.json
 
 WORKDIR /app/panel
 
@@ -52,4 +50,4 @@ EXPOSE 3001
 
 USER troxe
 
-CMD ["dumb-init", "node", "dist/server.js"]
+CMD ["dumb-init", "npx", "tsx", "src/server.ts"]

@@ -394,6 +394,28 @@ func (m *Manager) ListAll(ctx context.Context) ([]*ServerContainer, error) {
 	return result, nil
 }
 
+// GetAllocatedStats returns the total memory (MB) and disk (MB) allocated to
+// all Troxe-managed containers. Disk usage is reported as 0 when it cannot be
+// determined cheaply; the panel tolerates a zero value.
+func (m *Manager) GetAllocatedStats(ctx context.Context) (memoryMb int64, diskMb int64) {
+	containers, err := m.ListAll(ctx)
+	if err != nil {
+		return 0, 0
+	}
+
+	for _, c := range containers {
+		info, err := m.client.ContainerInspect(ctx, c.ContainerID)
+		if err != nil {
+			continue
+		}
+		if info.HostConfig != nil && info.HostConfig.Memory > 0 {
+			memoryMb += info.HostConfig.Memory / (1024 * 1024)
+		}
+	}
+
+	return memoryMb, diskMb
+}
+
 type CreateOptions struct {
 	ServerID    string
 	Image       string

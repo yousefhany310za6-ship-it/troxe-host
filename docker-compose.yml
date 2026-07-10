@@ -115,8 +115,35 @@ services:
     networks:
       - troxe-internal
 
+  # Node Agent (manages Docker containers on this host)
+  agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    container_name: troxe-agent
+    restart: unless-stopped
+    depends_on:
+      - panel
+    environment:
+      PANEL_URL: ${PANEL_URL:-http://panel:3001}
+      DAEMON_TOKEN: ${AGENT_DAEMON_TOKEN:?set AGENT_DAEMON_TOKEN in .env}
+      NODE_ID: ${AGENT_NODE_ID:?set AGENT_NODE_ID in .env}
+      LISTEN_PORT: "8080"
+      DATA_DIRECTORY: /var/lib/troxe
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - agent-data:/var/lib/troxe
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - troxe-internal
+
 volumes:
   pgdata:
+    driver: local
+  agent-data:
     driver: local
   redisdata:
     driver: local

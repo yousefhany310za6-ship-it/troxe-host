@@ -1,0 +1,31 @@
+# Build stage
+FROM golang:1.22-alpine AS builder
+WORKDIR /src
+
+# Cache deps
+COPY node-agent/go.mod node-agent/go.sum* ./
+RUN cd node-agent && go mod download 2>/dev/null || true
+
+# Copy agent source
+COPY node-agent/ ./node-agent/
+
+WORKDIR /src/node-agent
+
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/troxe-agent ./cmd
+
+# Production stage
+FROM alpine:3.20 AS production
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates dumb-init && \
+    addgroup -g 1000 -S troxe && \
+    adduser -u 1000 -S troxe -G troxe
+
+COPY --from=builder /out/troxe-agent /app/troxe-agent
+
+USER troxe
+
+EXPOSE 8080
+
+# PANEL_URL, DAEMON_TOKEN, NODE_ID, LISTEN_PORT provided via env/compose
+CMD ["dumb-init", "/app/troxe-agent"]

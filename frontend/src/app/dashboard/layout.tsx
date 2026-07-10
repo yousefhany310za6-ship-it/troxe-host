@@ -10,6 +10,7 @@ import {
   Users,
   MapPin,
   Egg,
+  Settings,
   LogOut,
   Menu,
   X,
@@ -24,6 +25,7 @@ const navigation = [
   { name: "Users", href: "/dashboard/users", icon: Users },
   { name: "Locations", href: "/dashboard/locations", icon: MapPin },
   { name: "Eggs", href: "/dashboard/eggs", icon: Egg },
+  { name: "Settings", href: "/dashboard/settings", icon: Settings },
 ];
 
 function SidebarContent({

@@ -1,39 +1,54 @@
-troxe.localhost {
-    # Frontend
-    handle /api/* {
-        reverse_proxy panel:3001
-    }
+# Troxe Host reverse proxy
+# Set SITE_ADDRESS (e.g. troxe.example.com) via environment / --env-file.
+# Caddy automatically handles WebSocket upgrades for reverse_proxy.
 
-    handle {
-        reverse_proxy frontend:3000
-    }
-
-    # Security headers
-    header {
-        X-Content-Type-Options nosniff
-        X-Frame-Options DENY
-        X-XSS-Protection "1; mode=block"
-        Referrer-Policy strict-origin-when-cross-origin
-        -Server
-    }
-
-    # Logging
-    log {
-        output stdout
-        format json
-    }
+{
+	# Increase read/write timeouts so long-lived console WS connections are stable
+	servers {
+		timeouts {
+			read_body  30s
+			write     1h
+			idle      1h
+		}
+	}
 }
 
-# Production example:
+{$SITE_ADDRESS:troxe.localhost} {
+	encode gzip
+
+	# API + WebSocket console (e.g. /api/v1/servers/:id/console/ws)
+	handle /api/* {
+		reverse_proxy panel:3001
+	}
+
+	# Everything else -> Next.js frontend
+	handle {
+		reverse_proxy frontend:3000
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+# Production example (HTTPS with automatic certs):
 # troxe.example.com {
-#     reverse_proxy frontend:3000
-#     tls {
-#         protocols tls1.2 tls1.3
+#     encode gzip
+#     handle /api/* {
+#         reverse_proxy panel:3001
 #     }
-# }
-#
-# api.troxe.example.com {
-#     reverse_proxy panel:3001
+#     handle {
+#         reverse_proxy frontend:3000
+#     }
 #     tls {
 #         protocols tls1.2 tls1.3
 #     }

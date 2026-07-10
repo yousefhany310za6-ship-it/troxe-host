@@ -3,7 +3,7 @@ import { addJob } from "../workers/index.js";
 import { getNodeForServer, sendServerCommand } from "../lib/node-agent.js";
 import { agentPost } from "../lib/node-agent.js";
 
-function matchField(field: string, value: number): boolean {
+export function matchField(field: string, value: number): boolean {
   if (field === "*") return true;
   const parts = field.split(",");
   for (const part of parts) {
@@ -27,20 +27,23 @@ function matchField(field: string, value: number): boolean {
   return false;
 }
 
-function matchesCron(expr: string, date: Date): boolean {
+export function matchesCron(expr: string, date: Date): boolean {
   const parts = expr.trim().split(/\s+/);
   if (parts.length < 5) return false;
 
   const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
 
-  if (!matchField(minute, date.getUTCMinutes())) return false;
-  if (!matchField(hour, date.getUTCHours())) return false;
-  if (!matchField(dayOfMonth, date.getUTCDate())) return false;
-  if (!matchField(month, date.getUTCMonth() + 1)) return false;
+  if (!matchField(minute, date.getMinutes())) return false;
+  if (!matchField(hour, date.getHours())) return false;
+  if (!matchField(dayOfMonth, date.getDate())) return false;
+  if (!matchField(month, date.getMonth() + 1)) return false;
 
   if (dayOfWeek !== "*") {
-    const dow = date.getUTCDay();
-    if (!matchField(dayOfWeek, dow === 0 ? 7 : dow)) return false;
+    const dow = date.getDay(); // 0 = Sunday .. 6 = Saturday
+    // In cron both 0 and 7 represent Sunday.
+    if (!matchField(dayOfWeek, dow) && !(dow === 0 && matchField(dayOfWeek, 7))) {
+      return false;
+    }
   }
 
   return true;
