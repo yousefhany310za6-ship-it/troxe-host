@@ -53,6 +53,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/servers/{id}/restart", s.handleRestartServer)
 	mux.HandleFunc("POST /api/servers/{id}/kill", s.handleKillServer)
 	mux.HandleFunc("POST /api/servers/{id}/remove", s.handleRemoveServer)
+	mux.HandleFunc("POST /api/servers/{id}/command", s.handleServerCommand)
 
 	// Server info routes
 	mux.HandleFunc("GET /api/servers/{id}/status", s.handleServerStatus)
@@ -239,6 +240,35 @@ func (s *Server) handleRemoveServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func (s *Server) handleServerCommand(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	var req struct {
+		Command string `json:"command"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	if req.Command == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Command required"})
+		return
+	}
+
+	output, err := s.containerMgr.Exec(r.Context(), serverID, []string{"/bin/sh", "-c", req.Command})
+	if err != nil {
+		log.Printf("Failed to exec command for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"output":  output,
+	})
 }
 
 func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {

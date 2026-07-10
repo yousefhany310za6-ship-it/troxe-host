@@ -7,6 +7,7 @@ import {
   agentPost,
   agentGet,
   getNodeForServer,
+  sendServerCommand,
 } from "../lib/node-agent.js";
 
 const connection = {
@@ -227,6 +228,27 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     }
 
     await db.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
+  },
+
+  "server.command": async (job) => {
+    const { serverId, command } = job.data;
+    console.log(`[Job] Sending command to server: ${serverId}`);
+
+    const node = await getNodeForServer(serverId, db);
+    if (!node) {
+      throw new Error(`Node not found for server ${serverId}`);
+    }
+
+    const resp = await sendServerCommand(node, serverId, command);
+    if (!resp.ok) {
+      throw new Error(`Failed to send command: ${resp.error}`);
+    }
+
+    await eventBus.emit("server.command.sent", {
+      subjectType: "server",
+      subjectId: serverId,
+      command,
+    });
   },
 
   "backup.create": async (job) => {

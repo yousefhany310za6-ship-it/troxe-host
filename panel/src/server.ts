@@ -19,6 +19,7 @@ import subuserRoutes from "./api/routes/subusers.js";
 import serverSettingsRoutes from "./api/routes/server-settings.js";
 import monitoringRoutes from "./api/routes/monitoring.js";
 import themeRoutes from "./api/routes/themes.js";
+import { startScheduler } from "./services/scheduler.js";
 
 // Extend Fastify types
 declare module "fastify" {
@@ -141,6 +142,9 @@ async function start() {
   console.log(`Panel listening on port ${config.PANEL_PORT}`);
   console.log(`API: http://localhost:${config.PANEL_PORT}/api/v1`);
   console.log(`Health: http://localhost:${config.PANEL_PORT}/health`);
+
+  // Start schedule executor
+  startScheduler();
 }
 
 start().catch((err) => {

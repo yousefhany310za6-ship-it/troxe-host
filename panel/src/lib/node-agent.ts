@@ -157,6 +157,18 @@ export function createAgentWebSocket(
   return ws;
 }
 
+export async function sendServerCommand(
+  node: NodeInfo,
+  serverId: string,
+  command: string
+): Promise<AgentResponse<{ output: string }>> {
+  return agentPost<{ output: string }>(
+    node,
+    `/api/servers/${serverId}/command`,
+    { command }
+  );
+}
+
 export async function getNodeForServer(
   serverId: string,
   db: any

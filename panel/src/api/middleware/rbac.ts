@@ -116,7 +116,7 @@ export async function requireServerAccess(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
-  const serverId = (request.params as any).id;
+  const serverId = (request.params as any).id || (request.params as any).serverId;
   if (!serverId || !request.user) {
     return reply.status(403).send({ error: "Access denied" });
   }

@@ -5,6 +5,8 @@ import {
   requireServerAccess,
   requirePermission,
 } from "../middleware/rbac.js";
+import { addJob } from "../../workers/index.js";
+import { getNodeForServer, sendServerCommand, agentPost } from "../../lib/node-agent.js";
 
 const createScheduleSchema = z.object({
   name: z.string().min(1).max(100),
@@ -178,8 +180,27 @@ export default async function scheduleRoutes(app: FastifyInstance) {
       }
 
       const schedule = result.rows[0];
+      const serverId = schedule.server_id;
+      const tasks = Array.isArray(schedule.tasks) ? schedule.tasks : [];
 
-      // TODO: Execute schedule tasks
+      for (const task of tasks) {
+        const type = task.type;
+        const payload = task.payload || "";
+        try {
+          if (type === "command") {
+            await addJob("server.command", { serverId, command: payload });
+          } else if (type === "power" && ["start", "stop", "restart", "kill"].includes(payload)) {
+            await addJob(`server.${payload}`, { serverId });
+          } else if (type === "backup") {
+            await addJob("backup.create", { serverId, backupId: crypto.randomUUID() });
+          } else if (type === "announce") {
+            console.log(`[Schedule] Announce for ${serverId}: ${payload}`);
+          }
+        } catch (err) {
+          console.error(`[Schedule] Run-now task failed (${type}):`, err);
+        }
+      }
+
       await app.db.query("UPDATE schedules SET last_run_at = now() WHERE id = $1", [
         scheduleId,
       ]);
