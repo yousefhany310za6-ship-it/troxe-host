@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sync"
 
@@ -39,10 +40,50 @@ func NewManager(dockerSocket string) (*Manager, error) {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
 	}
 
-	return &Manager{
+	m := &Manager{
 		client:     cli,
 		containers: make(map[string]*ServerContainer),
-	}, nil
+	}
+
+	// Restore existing containers from Docker so we don't lose tracking after a restart
+	if err := m.Restore(context.Background()); err != nil {
+		log.Printf("[container] warning: failed to restore containers: %v", err)
+	}
+
+	return m, nil
+}
+
+// Restore scans Docker for existing Troxe-managed containers and rebuilds the
+// in-memory map. This ensures the agent can manage containers that were created
+// before a restart.
+func (m *Manager) Restore(ctx context.Context) error {
+	existing, err := m.client.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("label", "troxe.managed=true")),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	count := 0
+	for _, c := range existing {
+		serverID := c.Labels["troxe.server_id"]
+		if serverID == "" {
+			continue
+		}
+		m.containers[serverID] = &ServerContainer{
+			ServerID:    serverID,
+			ContainerID: c.ID,
+			Status:      c.State,
+			Image:       c.Image,
+		}
+		count++
+	}
+
+	if count > 0 {
+		log.Printf("[container] restored %d container(s) from Docker", count)
+	}
+	return nil
 }
 
 func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContainer, error) {

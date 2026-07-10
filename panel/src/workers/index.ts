@@ -140,10 +140,51 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
       [serverId]
     );
 
+    const result = await db.query(
+      `SELECT s.*, n.fqdn, n.daemon_listen_port
+       FROM servers s JOIN nodes n ON s.node_id = n.id
+       WHERE s.id = $1`,
+      [serverId]
+    );
+    if (result.rows.length === 0) throw new Error(`Server ${serverId} not found`);
+
+    const srv = result.rows[0];
     const node = await getNodeForServer(serverId, db);
     if (!node) throw new Error(`Node not found for server ${serverId}`);
 
-    const resp = await agentPost(node, `/api/servers/${serverId}/start`);
+    let resp = await agentPost(node, `/api/servers/${serverId}/start`);
+
+    // If agent doesn't track this container (e.g. agent restarted), create it first
+    if (!resp.ok && resp.error && resp.error.includes("container not found")) {
+      console.log(`[Job] Container not tracked, creating for server: ${serverId}`);
+
+      const environment =
+        typeof srv.environment === "string"
+          ? JSON.parse(srv.environment)
+          : srv.environment || {};
+
+      const createResp = await agentPost(node, `/api/servers/${serverId}/create`, {
+        image: srv.docker_image,
+        startup: srv.startup_command || "",
+        environment: { ...environment, STARTUP: srv.startup_command || "" },
+        memory_bytes: Number(srv.memory_mb) * 1024 * 1024,
+        cpu_percent: Number(srv.cpu_percent),
+        pid_limit: Number(srv.pid_limit) || 512,
+        data_path: `/var/lib/troxe/${serverId}`,
+        ports: [],
+      });
+
+      if (!createResp.ok) {
+        await db.query(
+          `UPDATE servers SET status = 'crashed' WHERE id = $1`,
+          [serverId]
+        );
+        throw new Error(`Failed to create container: ${createResp.error}`);
+      }
+
+      resp = await agentPost(node, `/api/servers/${serverId}/start`);
+    }
+
     if (!resp.ok) {
       await db.query(
         `UPDATE servers SET status = 'crashed' WHERE id = $1`,
@@ -177,7 +218,12 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
 
     const resp = await agentPost(node, `/api/servers/${serverId}/stop`);
     if (!resp.ok) {
-      throw new Error(`Failed to stop server: ${resp.error}`);
+      // Container not tracked (agent restarted) — treat as already stopped
+      if (resp.error && resp.error.includes("container not found")) {
+        console.log(`[Job] Container not tracked for ${serverId}, treating as stopped`);
+      } else {
+        throw new Error(`Failed to stop server: ${resp.error}`);
+      }
     }
 
     await db.query(
@@ -195,16 +241,57 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     const { serverId } = job.data;
     console.log(`[Job] Restarting server: ${serverId}`);
 
+    await db.query(
+      `UPDATE servers SET status = 'starting' WHERE id = $1`,
+      [serverId]
+    );
+
     const node = await getNodeForServer(serverId, db);
     if (!node) throw new Error(`Node not found for server ${serverId}`);
 
-    const resp = await agentPost(node, `/api/servers/${serverId}/restart`);
-    if (!resp.ok) {
+    // Stop first (tolerate "not found" — container may already be gone)
+    const stopResp = await agentPost(node, `/api/servers/${serverId}/stop`);
+    if (!stopResp.ok && stopResp.error && !stopResp.error.includes("container not found")) {
+      console.warn(`[Job] Stop before restart failed: ${stopResp.error}`);
+    }
+
+    // Create if needed, then start (reuse server.start logic)
+    const startResp = await agentPost(node, `/api/servers/${serverId}/start`);
+    if (!startResp.ok && startResp.error && startResp.error.includes("container not found")) {
+      // Fall back to create + start
+      const srv = (await db.query(
+        `SELECT s.*, n.fqdn, n.daemon_listen_port
+         FROM servers s JOIN nodes n ON s.node_id = n.id
+         WHERE s.id = $1`,
+        [serverId]
+      )).rows[0];
+
+      if (srv) {
+        const environment =
+          typeof srv.environment === "string"
+            ? JSON.parse(srv.environment)
+            : srv.environment || {};
+
+        await agentPost(node, `/api/servers/${serverId}/create`, {
+          image: srv.docker_image,
+          startup: srv.startup_command || "",
+          environment: { ...environment, STARTUP: srv.startup_command || "" },
+          memory_bytes: Number(srv.memory_mb) * 1024 * 1024,
+          cpu_percent: Number(srv.cpu_percent),
+          pid_limit: Number(srv.pid_limit) || 512,
+          data_path: `/var/lib/troxe/${serverId}`,
+          ports: [],
+        });
+      }
+    }
+
+    const finalResp = await agentPost(node, `/api/servers/${serverId}/start`);
+    if (!finalResp.ok) {
       await db.query(
         `UPDATE servers SET status = 'crashed' WHERE id = $1`,
         [serverId]
       );
-      throw new Error(`Failed to restart server: ${resp.error}`);
+      throw new Error(`Failed to restart server: ${finalResp.error}`);
     }
 
     await db.query(
