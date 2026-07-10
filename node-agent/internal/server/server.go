@@ -70,10 +70,10 @@ func (s *Server) Start() error {
 
 	// File management
 	mux.HandleFunc("GET /api/servers/{id}/files", s.handleFileListRoute)
-	mux.HandleFunc("GET /api/servers/{id}/files/*", s.handleFileReadRoute)
-	mux.HandleFunc("PUT /api/servers/{id}/files/*", s.handleFileWriteRoute)
+	mux.HandleFunc("GET /api/servers/{id}/files/{filepath...}", s.handleFileReadRoute)
+	mux.HandleFunc("PUT /api/servers/{id}/files/{filepath...}", s.handleFileWriteRoute)
 	mux.HandleFunc("POST /api/servers/{id}/files/create", s.handleFileCreateRoute)
-	mux.HandleFunc("DELETE /api/servers/{id}/files/*", s.handleFileDeleteRoute)
+	mux.HandleFunc("DELETE /api/servers/{id}/files/{filepath...}", s.handleFileDeleteRoute)
 	mux.HandleFunc("POST /api/servers/{id}/files/rename", s.handleFileRenameRoute)
 	mux.HandleFunc("POST /api/servers/{id}/files/upload", s.handleFileUploadRoute)
 
@@ -592,13 +592,13 @@ func (s *Server) handleFileListRoute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFileReadRoute(w http.ResponseWriter, r *http.Request) {
 	serverID := r.PathValue("id")
-	filePath := r.PathValue("*")
+	filePath := r.PathValue("filepath")
 	s.handleFileRead(w, r, serverID, filePath)
 }
 
 func (s *Server) handleFileWriteRoute(w http.ResponseWriter, r *http.Request) {
 	serverID := r.PathValue("id")
-	filePath := r.PathValue("*")
+	filePath := r.PathValue("filepath")
 	s.handleFileWrite(w, r, serverID, filePath)
 }
 
@@ -609,7 +609,7 @@ func (s *Server) handleFileCreateRoute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFileDeleteRoute(w http.ResponseWriter, r *http.Request) {
 	serverID := r.PathValue("id")
-	filePath := r.PathValue("*")
+	filePath := r.PathValue("filepath")
 	s.handleFileDelete(w, r, serverID, filePath)
 }
 
