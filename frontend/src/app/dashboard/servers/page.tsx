@@ -35,10 +35,11 @@ function formatBytes(mb: number) {
 }
 
 export default function ServersPage() {
-  const { data: servers, error, isLoading } = useSWR<Server[]>(
+  const { data, error, isLoading } = useSWR<{ servers: Server[] }>(
     "/api/v1/servers",
-    (url: string) => fetchApi<Server[]>(url)
+    (url: string) => fetchApi<{ servers: Server[] }>(url)
   );
+  const servers = data?.servers;
 
   return (
     <div className="space-y-8">

@@ -8,6 +8,27 @@ import {
 import { addJob } from "../../workers/index.js";
 import { eventBus } from "../../events/index.js";
 
+// Map a raw DB server row to the camelCase shape the frontend expects.
+function mapServer(row: Record<string, any>) {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    nodeId: row.node_id,
+    nodeName: row.node_name,
+    nodeFqdn: row.node_fqdn,
+    owner: row.owner_username,
+    ip: row.node_fqdn || "",
+    port: 0,
+    memoryLimit: Number(row.memory_mb) || 0,
+    memoryUsed: 0,
+    cpuLimit: Number(row.cpu_percent) || 0,
+    cpuUsed: 0,
+    diskLimit: Number(row.disk_mb) || 0,
+    diskUsed: 0,
+  };
+}
+
 const createServerSchema = z.object({
   name: z.string().min(1).max(100),
   eggId: z.string().uuid(),
@@ -104,7 +125,7 @@ export default async function serverRoutes(app: FastifyInstance) {
       }
 
       const result = await app.db.query(query, params);
-      return reply.send({ servers: result.rows });
+      return reply.send({ servers: result.rows.map(mapServer) });
     }
   );
 
@@ -130,7 +151,24 @@ export default async function serverRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Server not found" });
       }
 
-      return reply.send({ server: result.rows[0] });
+      return reply.send({ server: mapServer(result.rows[0]) });
+    }
+  );
+
+  // Server power actions (start/stop/restart/kill) -> queue a worker job
+  app.post(
+    "/servers/:id/power",
+    { preHandler: [authenticateSession, requireServerAccess] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const { action } = request.body as { action: string };
+
+      if (!["start", "stop", "restart", "kill"].includes(action)) {
+        return reply.status(400).send({ error: "Invalid power action" });
+      }
+
+      await addJob(`server.${action}`, { serverId: id });
+      return reply.send({ success: true });
     }
   );
 
