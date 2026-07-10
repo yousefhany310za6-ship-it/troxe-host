@@ -20,6 +20,9 @@ import {
   HardDrive,
   MemoryStick,
   Globe,
+  Activity,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +43,15 @@ interface ServerDetail {
   diskUsed: number;
 }
 
+interface ServerStats {
+  memory: { used: number; limit: number; percentage: number };
+  cpu: { usage: number; limit: number };
+  disk: { used: number; limit: number; percentage: number };
+  network: { rx: number; tx: number };
+  uptime: number;
+  state: string;
+}
+
 const statusVariant: Record<ServerDetail["status"], "success" | "destructive" | "warning"> = {
   running: "success",
   stopped: "destructive",
@@ -50,6 +62,24 @@ const statusVariant: Record<ServerDetail["status"], "success" | "destructive" | 
 function formatBytes(mb: number) {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb} MB`;
+}
+
+function formatBytesRaw(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds <= 0) return "--";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 }
 
 const tabs = [
@@ -76,6 +106,13 @@ export default function ServerDetailPage({
     (url: string) => fetchApi<{ server: ServerDetail }>(url)
   );
   const server = data?.server;
+
+  const { data: statsData } = useSWR<{ stats: ServerStats }>(
+    `/api/v1/servers/${id}/stats`,
+    (url: string) => fetchApi<{ stats: ServerStats }>(url),
+    { refreshInterval: 5000 }
+  );
+  const stats = statsData?.stats;
 
   const activeTab = pathname === `/dashboard/servers/${id}`
     ? ""
@@ -121,27 +158,62 @@ export default function ServerDetailPage({
     );
   }
 
+  const isRunning = (stats?.state || server.status) === "running";
+
+  const statusInfo = [
+    {
+      icon: isRunning ? Wifi : WifiOff,
+      label: "State",
+      value: stats?.state || server.status,
+      color: isRunning ? "text-emerald-400" : "text-red-400",
+    },
+    {
+      icon: Clock,
+      label: "Uptime",
+      value: formatUptime(stats?.uptime || 0),
+      color: "text-blue-400",
+    },
+    {
+      icon: Globe,
+      label: "Address",
+      value: `${server.ip}:${server.port}`,
+      color: "text-gray-400",
+    },
+  ];
+
+  const liveMemUsed = stats?.memory.used || server.memoryUsed * 1024 * 1024;
+  const liveMemLimit = stats?.memory.limit || server.memoryLimit * 1024 * 1024;
+  const liveMemPct = stats?.memory.percentage || Math.min((server.memoryUsed / server.memoryLimit) * 100, 100);
+
+  const liveCpuUsage = stats?.cpu.usage || server.cpuUsed;
+  const liveCpuLimit = stats?.cpu.limit || server.cpuLimit;
+  const liveCpuPct = Math.min((liveCpuUsage / liveCpuLimit) * 100, 100);
+
+  const liveDiskUsed = stats?.disk.used || server.diskUsed * 1024 * 1024;
+  const liveDiskLimit = stats?.disk.limit || server.diskLimit * 1024 * 1024;
+  const liveDiskPct = stats?.disk.percentage || Math.min((server.diskUsed / server.diskLimit) * 100, 100);
+
   const resourceCards = [
     {
       label: "Memory",
       icon: MemoryStick,
-      used: formatBytes(server.memoryUsed),
-      total: formatBytes(server.memoryLimit),
-      percent: Math.min((server.memoryUsed / server.memoryLimit) * 100, 100),
+      used: formatBytesRaw(liveMemUsed),
+      total: formatBytesRaw(liveMemLimit),
+      percent: liveMemPct,
     },
     {
       label: "CPU",
       icon: Cpu,
-      used: `${server.cpuUsed}%`,
-      total: `${server.cpuLimit}%`,
-      percent: Math.min((server.cpuUsed / server.cpuLimit) * 100, 100),
+      used: `${liveCpuUsage.toFixed(1)}%`,
+      total: `${liveCpuLimit}%`,
+      percent: liveCpuPct,
     },
     {
       label: "Disk",
       icon: HardDrive,
-      used: formatBytes(server.diskUsed),
-      total: formatBytes(server.diskLimit),
-      percent: Math.min((server.diskUsed / server.diskLimit) * 100, 100),
+      used: formatBytesRaw(liveDiskUsed),
+      total: formatBytesRaw(liveDiskLimit),
+      percent: liveDiskPct,
     },
   ];
 
@@ -189,6 +261,21 @@ export default function ServerDetailPage({
             Restart
           </Button>
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {statusInfo.map((info) => (
+          <div
+            key={info.label}
+            className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3"
+          >
+            <info.icon className={`h-5 w-5 flex-shrink-0 ${info.color}`} />
+            <div className="min-w-0">
+              <p className="text-xs text-muted-foreground">{info.label}</p>
+              <p className="text-sm font-semibold truncate">{info.value}</p>
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
