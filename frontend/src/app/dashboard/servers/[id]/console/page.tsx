@@ -1,12 +1,65 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
-import { Terminal as TerminalIcon, Send } from "lucide-react";
-import { Card } from "@/components/ui/card";
+import { useState, useEffect, useRef } from "react";
+import useSWR from "swr";
+import { fetchApi } from "@/lib/api";
+import {
+  Terminal,
+  Play,
+  Square,
+  Clock,
+  Cpu,
+  MemoryStick,
+  HardDrive,
+  RefreshCw,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebLinksAddon } from "@xterm/addon-web-links";
+
+interface ServerStats {
+  memory: { used: number; limit: number; percentage: number };
+  cpu: { usage: number; limit: number };
+  disk: { used: number; limit: number; percentage: number };
+  network: { rx: number; tx: number };
+  uptime: number;
+  state: string;
+}
+
+interface LogEntry {
+  line: number;
+  content: string;
+  timestamp: string;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds <= 0) return "--";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function logLevelColor(content: string): string {
+  const lower = content.toLowerCase();
+  if (lower.includes("error") || lower.includes("fatal") || lower.includes("panic")) return "text-red-400";
+  if (lower.includes("warn")) return "text-yellow-400";
+  if (lower.includes("info") || lower.includes("started") || lower.includes("listening")) return "text-emerald-400";
+  if (lower.includes("debug")) return "text-gray-500";
+  return "text-gray-300";
+}
 
 export default function ConsolePage({
   params,
@@ -14,196 +67,169 @@ export default function ConsolePage({
   params: { id: string };
 }) {
   const { id } = params;
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const termInstance = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [serverName, setServerName] = useState("Console");
-  const [commandInput, setCommandInput] = useState("");
+  const logEndRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
 
-  const cleanup = useCallback(() => {
-    if (reconnectTimer.current) {
-      clearTimeout(reconnectTimer.current);
-      reconnectTimer.current = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.onclose = null;
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-  }, []);
-
-  const connect = useCallback(
-    (term: Terminal, fitAddon: FitAddon) => {
-      cleanup();
-
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${window.location.host}/api/v1/servers/${id}/console/ws`;
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setConnected(true);
-        term.focus();
-        fitAddon.fit();
-      };
-
-      ws.onmessage = (event) => {
-        const data = typeof event.data === "string" ? event.data : String(event.data);
-        term.write(data);
-      };
-
-      ws.onerror = () => {};
-
-      ws.onclose = () => {
-        setConnected(false);
-        reconnectTimer.current = setTimeout(() => {
-          connect(term, fitAddon);
-        }, 3000);
-      };
-    },
-    [id, cleanup]
+  const { data: statsData } = useSWR<{ stats: ServerStats }>(
+    `/api/v1/servers/${id}/stats`,
+    (url: string) => fetchApi<{ stats: ServerStats }>(url),
+    { refreshInterval: 5000 }
   );
+  const stats = statsData?.stats;
+
+  const { data: logsData, mutate: mutateLogs } = useSWR<{ logs: LogEntry[] }>(
+    `/api/v1/servers/${id}/console`,
+    (url: string) => fetchApi<{ logs: LogEntry[] }>(url),
+    { refreshInterval: 4000 }
+  );
+  const logs = logsData?.logs || [];
 
   useEffect(() => {
-    if (!terminalRef.current) return;
-
-    const term = new Terminal({
-      cursorBlink: true,
-      fontSize: 14,
-      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      theme: {
-        background: "#0a0a0a",
-        foreground: "#d4d4d4",
-        cursor: "#d4d4d4",
-        cursorAccent: "#0a0a0a",
-        selectionBackground: "#264f78",
-        black: "#0a0a0a",
-        red: "#f87171",
-        green: "#4ade80",
-        yellow: "#facc15",
-        blue: "#60a5fa",
-        magenta: "#c084fc",
-        cyan: "#22d3ee",
-        white: "#d4d4d4",
-        brightBlack: "#6b7280",
-        brightRed: "#fca5a5",
-        brightGreen: "#86efac",
-        brightYellow: "#fde68a",
-        brightBlue: "#93c5fd",
-        brightMagenta: "#d8b4fe",
-        brightCyan: "#67e8f9",
-        brightWhite: "#f5f5f5",
-      },
-      allowProposedApi: true,
-    });
-
-    const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
-
-    term.loadAddon(fitAddon);
-    term.loadAddon(webLinksAddon);
-    term.open(terminalRef.current);
-
-    termInstance.current = term;
-    fitAddonRef.current = fitAddon;
-
-    fitAddon.fit();
-
-    const onDataDisposable = term.onData((data) => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(data);
-      }
-    });
-
-    const onResizeDisposable = term.onResize(() => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        const dims = fitAddon.proposeDimensions();
-        if (dims) {
-          wsRef.current.send(
-            JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows })
-          );
-        }
-      }
-    });
-
-    connect(term, fitAddon);
-
-    const handleResize = () => fitAddon.fit();
-    window.addEventListener("resize", handleResize);
-
-    fetch(`/api/v1/servers/${id}`)
-      .then((r) => r.json())
-      .then((data: { name?: string }) => {
-        if (data.name) setServerName(data.name);
-      })
-      .catch(() => {});
-
-    return () => {
-      onDataDisposable.dispose();
-      onResizeDisposable.dispose();
-      window.removeEventListener("resize", handleResize);
-      cleanup();
-      term.dispose();
-      termInstance.current = null;
-      fitAddonRef.current = null;
-    };
-  }, [id, connect, cleanup]);
-
-  function handleSendCommand() {
-    if (!commandInput.trim()) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(commandInput + "\n");
+    if (autoScroll && logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-    if (termInstance.current) {
-      termInstance.current.focus();
-    }
-    setCommandInput("");
+  }, [logs, autoScroll]);
+
+  function handleLogScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    setAutoScroll(atBottom);
   }
 
+  const isRunning = stats?.state === "running";
+
+  const infoRows = [
+    {
+      icon: isRunning ? Play : Square,
+      label: "State",
+      value: stats?.state || "unknown",
+      color: isRunning ? "text-emerald-400" : "text-red-400",
+      badge: isRunning ? "success" : ("destructive" as const),
+    },
+    {
+      icon: Clock,
+      label: "Uptime",
+      value: formatUptime(stats?.uptime || 0),
+      color: "text-blue-400",
+    },
+    {
+      icon: MemoryStick,
+      label: "Memory",
+      value: stats ? `${formatBytes(stats.memory.used)} / ${formatBytes(stats.memory.limit)}` : "--",
+      sub: stats ? `${stats.memory.percentage}%` : "",
+      color: "text-purple-400",
+    },
+    {
+      icon: Cpu,
+      label: "CPU",
+      value: stats ? `${stats.cpu.usage}%` : "--",
+      sub: stats ? `limit ${stats.cpu.limit}%` : "",
+      color: "text-orange-400",
+    },
+    {
+      icon: HardDrive,
+      label: "Disk",
+      value: stats ? `${formatBytes(stats.disk.used)} / ${formatBytes(stats.disk.limit)}` : "--",
+      sub: stats ? `${stats.disk.percentage}%` : "",
+      color: "text-cyan-400",
+    },
+  ];
+
   return (
-    <div className="flex flex-col h-[70vh] md:h-full">
-      <div className="flex items-center justify-between mb-4">
+    <div className="flex flex-col h-[70vh] md:h-full gap-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <TerminalIcon className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-2xl font-bold">{serverName}</h1>
+          <Terminal className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-2xl font-bold">Console</h1>
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          <div
-            className={`h-2 w-2 rounded-full ${
-              connected ? "bg-emerald-500" : "bg-destructive"
-            }`}
-          />
-          <span className="text-muted-foreground">
-            {connected ? "Connected" : "Disconnected"}
-          </span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-sm">
+            {isRunning ? (
+              <Wifi className="h-4 w-4 text-emerald-400" />
+            ) : (
+              <WifiOff className="h-4 w-4 text-red-400" />
+            )}
+            <span className="text-muted-foreground">
+              {isRunning ? "Running" : "Stopped"}
+            </span>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => mutateLogs()}
+          >
+            <RefreshCw className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
+      {/* Info rows */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        {infoRows.map((row) => (
+          <Card key={row.label}>
+            <CardContent className="p-4 flex items-center gap-3">
+              <row.icon className={`h-5 w-5 ${row.color} flex-shrink-0`} />
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground">{row.label}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-semibold truncate">{row.value}</p>
+                  {row.badge && (
+                    <Badge variant={row.badge} className="text-[10px] px-1.5 py-0">
+                      {row.value}
+                    </Badge>
+                  )}
+                </div>
+                {row.sub && (
+                  <p className="text-[11px] text-muted-foreground">{row.sub}</p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* Log output */}
       <Card className="flex-1 flex flex-col overflow-hidden min-h-0">
-        <div ref={terminalRef} className="flex-1 bg-[#0a0a0a] p-2 min-h-0" />
-        <div className="p-3 border-t border-border bg-card">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleSendCommand();
-            }}
-            className="flex items-center gap-2"
-          >
-            <input
-              type="text"
-              value={commandInput}
-              onChange={(e) => setCommandInput(e.target.value)}
-              placeholder="Send command..."
-              className="flex-1 bg-secondary border border-border rounded-lg px-4 py-2.5 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-brand-500"
-              disabled={!connected}
-            />
-            <Button type="submit" size="default" disabled={!connected || !commandInput.trim()}>
-              <Send className="h-4 w-4" />
+        <div className="px-4 py-2 border-b border-border flex items-center justify-between">
+          <span className="text-xs font-medium text-muted-foreground">
+            Logs ({logs.length} lines)
+          </span>
+          {!autoScroll && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-xs"
+              onClick={() => {
+                setAutoScroll(true);
+                logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+              }}
+            >
+              Scroll to bottom
             </Button>
-          </form>
+          )}
+        </div>
+        <div
+          className="flex-1 overflow-auto bg-[#0a0a0a] p-3 font-mono text-[13px] leading-5 min-h-0"
+          onScroll={handleLogScroll}
+        >
+          {logs.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-gray-500">
+              {isRunning ? "Waiting for logs..." : "Server is not running"}
+            </div>
+          ) : (
+            logs.map((log) => (
+              <div key={log.line} className="flex gap-3 hover:bg-white/5 px-1 rounded">
+                <span className="text-gray-600 select-none w-8 text-right flex-shrink-0">
+                  {log.line}
+                </span>
+                <span className={logLevelColor(log.content)}>
+                  {log.content}
+                </span>
+              </div>
+            ))
+          )}
+          <div ref={logEndRef} />
         </div>
       </Card>
     </div>
