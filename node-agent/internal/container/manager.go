@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
@@ -44,8 +46,13 @@ func NewManager(dockerSocket string) (*Manager, error) {
 }
 
 func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContainer, error) {
+	// Ensure data directory exists
+	if err := os.MkdirAll(opts.DataPath, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create data directory: %w", err)
+	}
+
 	// Pull image if not exists
-	_, err := m.client.ImagePull(ctx, opts.Image, types.ImagePullOptions{})
+	_, err := m.client.ImagePull(ctx, opts.Image, image.PullOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull image: %w", err)
 	}
@@ -103,7 +110,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContai
 		// Port bindings
 		PortBindings: portBindings,
 		// Restart policy (no auto-restart, panel controls this)
-		RestartPolicy: container.NeverRestart(),
+		RestartPolicy: container.RestartPolicy{Name: "no"},
 		// Mounts
 		Mounts: []mount.Mount{
 			{
@@ -269,7 +276,7 @@ func (m *Manager) Exec(ctx context.Context, serverID string, cmd []string) (stri
 		return "", fmt.Errorf("container not found for server %s", serverID)
 	}
 
-	execConfig := types.ExecConfig{
+	execConfig := container.ExecOptions{
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -281,7 +288,7 @@ func (m *Manager) Exec(ctx context.Context, serverID string, cmd []string) (stri
 		return "", err
 	}
 
-	hijacked, err := m.client.ContainerExecAttach(ctx, execResp.ID, types.ExecStartCheck{})
+	hijacked, err := m.client.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
 	if err != nil {
 		return "", err
 	}
@@ -337,8 +344,8 @@ func (m *Manager) GetStats(ctx context.Context, serverID string) (map[string]int
 
 	// Disk (from block io)
 	var diskBytes uint64
-	if statsData.BlkioStats.IOServiceBytesRecursive != nil {
-		for _, bio := range statsData.BlkioStats.IOServiceBytesRecursive {
+	if statsData.BlkioStats.IoServiceBytesRecursive != nil {
+		for _, bio := range statsData.BlkioStats.IoServiceBytesRecursive {
 			if bio.Op == "Read" {
 				diskBytes += bio.Value
 			}
@@ -394,7 +401,7 @@ type CreateOptions struct {
 	Environment map[string]string
 	MemoryBytes int64
 	CpuPercent  float64
-	PidLimit    int
+	PidLimit    int64
 	DataPath    string
 	Ports       []int
 }

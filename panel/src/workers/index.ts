@@ -75,9 +75,9 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
         ...environment,
         STARTUP: startupCmd,
       },
-      memory_bytes: server.memory_mb * 1024 * 1024,
-      cpu_percent: server.cpu_percent,
-      pid_limit: server.pid_limit || 512,
+      memory_bytes: Number(server.memory_mb) * 1024 * 1024,
+      cpu_percent: Number(server.cpu_percent),
+      pid_limit: Number(server.pid_limit) || 512,
       data_path: `/var/lib/troxe/${serverId}`,
       ports: [],
     });
@@ -88,6 +88,12 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
         [serverId]
       );
       throw new Error(`Failed to create container: ${createResp.error}`);
+    }
+
+    // Start the container
+    const startResp = await agentPost(node, `/api/servers/${serverId}/start`);
+    if (!startResp.ok) {
+      console.warn(`[Job] Warning: container created but failed to start: ${startResp.error}`);
     }
 
     await db.query(

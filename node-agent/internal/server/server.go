@@ -4,25 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
-	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/troxe-host/node-agent/internal/auth"
 	"github.com/troxe-host/node-agent/internal/config"
 	troxcontainer "github.com/troxe-host/node-agent/internal/container"
-	troxwebsocket "github.com/troxe-host/node-agent/internal/websocket"
 )
 
 type Server struct {
 	cfg           *config.Config
 	containerMgr  *troxcontainer.Manager
-	wsManager     *troxwebsocket.Manager
 	httpServer    *http.Server
 	mu            sync.RWMutex
 }
@@ -42,12 +37,9 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to create container manager: %w", err)
 	}
 
-	wsManager := troxwebsocket.NewManager()
-
 	return &Server{
 		cfg:          cfg,
 		containerMgr: containerMgr,
-		wsManager:    wsManager,
 	}, nil
 }
 
@@ -138,7 +130,7 @@ type CreateServerRequest struct {
 	Environment map[string]string `json:"environment"`
 	MemoryBytes int64             `json:"memory_bytes"`
 	CpuPercent  float64           `json:"cpu_percent"`
-	PidLimit    int               `json:"pid_limit"`
+	PidLimit    int64             `json:"pid_limit"`
 	DataPath    string            `json:"data_path"`
 	Ports       []int             `json:"ports"`
 }
@@ -326,10 +318,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		send:     make(chan []byte, 256),
 	}
 
-	s.wsManager.Register(client)
-	defer s.wsManager.Unregister(client)
-
-	// Stream container logs to client
 	go s.streamLogs(client)
 
 	go client.writePump()
@@ -364,7 +352,6 @@ func (c *WSClient) readPump(s *Server) {
 			c.closed = true
 		}
 		c.mu.Unlock()
-		s.wsManager.Unregister(c)
 	}()
 
 	c.conn.SetReadLimit(512)
@@ -397,7 +384,7 @@ func (c *WSClient) readPump(s *Server) {
 
 		case "send command":
 			if len(msg.Args) > 0 {
-				if err := s.containerMgr.Exec(context.Background(), c.serverID, []string{"/bin/sh", "-c", msg.Args[0]}); err != nil {
+				if _, err := s.containerMgr.Exec(context.Background(), c.serverID, []string{"/bin/sh", "-c", msg.Args[0]}); err != nil {
 					log.Printf("Exec failed: %v", err)
 					c.sendJSON(map[string]interface{}{
 						"type":  "output",
@@ -479,4 +466,51 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+// --- File route delegates ---
+
+func (s *Server) handleFileListRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	s.handleFileList(w, r, serverID)
+}
+
+func (s *Server) handleFileReadRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	filePath := r.PathValue("*")
+	s.handleFileRead(w, r, serverID, filePath)
+}
+
+func (s *Server) handleFileWriteRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	filePath := r.PathValue("*")
+	s.handleFileWrite(w, r, serverID, filePath)
+}
+
+func (s *Server) handleFileCreateRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	s.handleFileCreate(w, r, serverID)
+}
+
+func (s *Server) handleFileDeleteRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	filePath := r.PathValue("*")
+	s.handleFileDelete(w, r, serverID, filePath)
+}
+
+func (s *Server) handleFileRenameRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	s.handleFileRename(w, r, serverID)
+}
+
+func (s *Server) handleFileUploadRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	s.handleFileUpload(w, r, serverID)
+}
+
+func (s *Server) handleStatsRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	stats := s.getContainerStats(serverID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"stats": stats})
 }

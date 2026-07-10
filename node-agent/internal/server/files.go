@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -298,5 +299,4 @@ func (s *Server) getContainerStats(serverID string) map[string]interface{} {
 		}
 	}
 	return stats
-}
 }
