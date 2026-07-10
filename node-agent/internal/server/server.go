@@ -169,13 +169,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" || len(authHeader) < 8 || authHeader[:7] != "Bearer " {
+		// Accept token from Authorization header (HTTP) or query param (WebSocket)
+		var token string
+		if authHeader := r.Header.Get("Authorization"); authHeader != "" && len(authHeader) >= 8 && authHeader[:7] == "Bearer " {
+			token = authHeader[7:]
+		} else if t := r.URL.Query().Get("token"); t != "" {
+			token = t
+		} else {
 			http.Error(w, `{"error":"Bearer token required"}`, http.StatusUnauthorized)
 			return
 		}
 
-		token := authHeader[7:]
 		claims, err := auth.ValidateJWT(token, s.cfg.DaemonToken)
 		if err != nil {
 			http.Error(w, `{"error":"Invalid token"}`, http.StatusUnauthorized)

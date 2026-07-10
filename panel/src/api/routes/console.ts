@@ -44,8 +44,7 @@ export default async function consoleRoutes(app: FastifyInstance) {
   app.get(
     "/servers/:id/console/ws",
     { websocket: true },
-    (connection: any, request: FastifyRequest) => {
-      const ws: WebSocket = connection.socket;
+    (ws: WebSocket, request: FastifyRequest) => {
       const serverId = (request.params as any).id;
 
       app.log.info(`WebSocket connected for server console: ${serverId}`);

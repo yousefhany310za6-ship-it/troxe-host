@@ -1,6 +1,7 @@
 package container
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -301,12 +303,18 @@ func (m *Manager) GetLogs(ctx context.Context, serverID string, tail int) (strin
 	}
 	defer reader.Close()
 
-	data, err := io.ReadAll(reader)
-	if err != nil {
+	// Demultiplex Docker's multiplexed stdout/stderr stream
+	var stdout, stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, reader); err != nil {
 		return "", err
 	}
 
-	return string(data), nil
+	combined := stdout.String()
+	if stderr.Len() > 0 {
+		combined += stderr.String()
+	}
+
+	return combined, nil
 }
 
 func (m *Manager) Exec(ctx context.Context, serverID string, cmd []string) (string, error) {
