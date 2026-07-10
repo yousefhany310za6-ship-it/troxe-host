@@ -164,7 +164,7 @@ export default function ConsolePage({
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-[70vh] md:h-full">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <TerminalIcon className="h-5 w-5 text-muted-foreground" />
