@@ -33,6 +33,7 @@ type ServerContainer struct {
 	ContainerID string
 	Status      string
 	Image       string
+	StartedAt   time.Time
 }
 
 func NewManager(dockerSocket string, dataDirectory string) (*Manager, error) {
@@ -76,11 +77,20 @@ func (m *Manager) Restore(ctx context.Context) error {
 		if serverID == "" {
 			continue
 		}
+		startedAt := time.Time{}
+		if inspect, err := m.client.ContainerInspect(ctx, c.ID); err == nil {
+			if inspect.State != nil && inspect.State.StartedAt != "" {
+				if t, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt); err == nil {
+					startedAt = t
+				}
+			}
+		}
 		m.containers[serverID] = &ServerContainer{
 			ServerID:    serverID,
 			ContainerID: c.ID,
 			Status:      c.State,
 			Image:       c.Image,
+			StartedAt:   startedAt,
 		}
 		count++
 	}
@@ -206,6 +216,8 @@ func (m *Manager) Start(ctx context.Context, serverID string) error {
 		return fmt.Errorf("container not found for server %s", serverID)
 	}
 
+	sc.StartedAt = time.Now()
+
 	if err := m.client.ContainerStart(ctx, sc.ContainerID, container.StartOptions{}); err != nil {
 		return fmt.Errorf("failed to start container: %w", err)
 	}
@@ -321,6 +333,11 @@ func (m *Manager) GetLogs(ctx context.Context, serverID string, tail int) (strin
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       fmt.Sprintf("%d", tail),
+	}
+
+	// Only show logs since the last start
+	if !sc.StartedAt.IsZero() {
+		options.Since = fmt.Sprintf("%d", sc.StartedAt.Unix())
 	}
 
 	reader, err := m.client.ContainerLogs(ctx, sc.ContainerID, options)
