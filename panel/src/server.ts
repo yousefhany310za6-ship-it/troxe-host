@@ -21,6 +21,7 @@ import serverSettingsRoutes from "./api/routes/server-settings.js";
 import monitoringRoutes from "./api/routes/monitoring.js";
 import themeRoutes from "./api/routes/themes.js";
 import { startScheduler } from "./services/scheduler.js";
+import { securityHeaders } from "./api/middleware/security.js";
 
 // Extend Fastify types
 declare module "fastify" {
@@ -59,7 +60,24 @@ await app.register(jwt, {
 await app.register(rateLimit, {
   max: 100,
   timeWindow: "1 minute",
+  keyGenerator: (req) => req.ip,
 });
+
+// Stricter rate limit for auth endpoints
+app.register(async function authRateLimit(app) {
+  await app.register(rateLimit, {
+    max: 10,
+    timeWindow: "5 minutes",
+    keyGenerator: (req) => {
+      const body = req.body as any;
+      const email = body?.email || "";
+      return `login:${req.ip}:${email}`;
+    },
+    errorResponseBuilder: () => ({
+      error: "Too many login attempts, please try again in 5 minutes",
+    }),
+  });
+}, { prefix: "/api/v1/auth/login" });
 
 await app.register(cookie, {
   secret: config.JWT_COOKIE_SECRET,
@@ -85,6 +103,9 @@ app.get("/health", async () => {
     uptime: process.uptime(),
   };
 });
+
+// Security headers on every response
+app.addHook("onRequest", securityHeaders);
 
 // API routes
 await app.register(authRoutes, { prefix: "/api/v1" });

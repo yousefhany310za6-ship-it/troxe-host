@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { validateApiKey } from "./auth.js";
+import { validateSessionSecurity } from "./security.js";
 
 export interface TroxeUser {
   id: string;
@@ -21,42 +22,12 @@ declare module "@fastify/jwt" {
   }
 }
 
-// Authenticate via session cookie (web users)
+// Authenticate via session cookie (web users) — validates all security cookies
 export async function authenticateSession(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
-  try {
-    const token = request.cookies?.troxe_session;
-    if (!token) {
-      return reply.status(401).send({ error: "Authentication required" });
-    }
-
-    const decoded = request.server.jwt.verify<{ userId: string }>(token);
-    const result = await request.server.db.query(
-      `SELECT id, username, email, root_admin, totp_enabled, suspended FROM users WHERE id = $1`,
-      [decoded.userId]
-    );
-
-    if (result.rows.length === 0 || result.rows[0].suspended) {
-      return reply.status(401).send({ error: "Invalid or suspended user" });
-    }
-
-    const user = result.rows[0];
-    request.user = {
-      id: user.id,
-      userId: user.id,
-      username: user.username,
-      email: user.email,
-      rootAdmin: user.root_admin,
-      totpEnabled: user.totp_enabled,
-      permissions: {},
-      isClient: true,
-      isAdmin: user.root_admin,
-    };
-  } catch {
-    return reply.status(401).send({ error: "Invalid session" });
-  }
+  return validateSessionSecurity(request, reply);
 }
 
 // Authenticate via API key (Bearer token)

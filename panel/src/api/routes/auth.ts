@@ -1,8 +1,10 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
+import crypto from "crypto";
 import { hashPassword, verifyPassword, generateApiKey, hashApiKey } from "../middleware/auth.js";
 import { authenticator } from "otplib";
 import QRCode from "qrcode";
+import { setSecurityCookies, clearSecurityCookies } from "../middleware/security.js";
 
 const registerSchema = z.object({
   username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9_-]+$/),
@@ -44,15 +46,14 @@ export default async function authRoutes(app: FastifyInstance) {
 
     const user = result.rows[0];
 
-    // Generate session token
-    const token = app.jwt.sign({ userId: user.id }, { expiresIn: "7d" });
-
-    reply.setCookie("troxe_session", token, {
-      path: "/",
-      httpOnly: true,
-      secure: false, // Set true in production
-      sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60, // 7 days
+    // Set all security cookies
+    setSecurityCookies(reply, {
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      ip: request.ip,
+      language: "en",
+      fingerprint: request.headers["user-agent"] || "unknown",
     });
 
     // Log activity
@@ -124,14 +125,14 @@ export default async function authRoutes(app: FastifyInstance) {
       [request.ip, user.id]
     );
 
-    const token = app.jwt.sign({ userId: user.id }, { expiresIn: "7d" });
-
-    reply.setCookie("troxe_session", token, {
-      path: "/",
-      httpOnly: true,
-      secure: false,
-      sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60,
+    // Set all security cookies
+    setSecurityCookies(reply, {
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      ip: request.ip,
+      language: "en",
+      fingerprint: request.headers["user-agent"] || "unknown",
     });
 
     await app.db.query(
@@ -151,9 +152,27 @@ export default async function authRoutes(app: FastifyInstance) {
     });
   });
 
+  // Get CSRF token (for SPA initialization)
+  app.get("/auth/csrf", async (request: FastifyRequest, reply: FastifyReply) => {
+    const existingCsrf = request.cookies?.troxe_csrf;
+    if (existingCsrf) {
+      return reply.send({ csrfToken: existingCsrf });
+    }
+    // Generate new CSRF token if not present
+    const csrfToken = crypto.randomBytes(32).toString("hex");
+    reply.setCookie("troxe_csrf", csrfToken, {
+      path: "/",
+      httpOnly: false,
+      secure: false,
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60,
+    });
+    return reply.send({ csrfToken });
+  });
+
   // Logout
   app.post("/auth/logout", async (request: FastifyRequest, reply: FastifyReply) => {
-    reply.clearCookie("troxe_session", { path: "/" });
+    clearSecurityCookies(reply);
     return reply.send({ success: true });
   });
 

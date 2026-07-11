@@ -12,6 +12,19 @@ export class ApiError extends Error {
   }
 }
 
+function getCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+  return match ? decodeURIComponent(match[2]) : null;
+}
+
+function getCsrfHeader(): string {
+  const csrfToken = getCookie("troxe_csrf");
+  if (!csrfToken) return "";
+  // The header value is HMAC of the cookie value
+  // For client-side, we just send the raw token; server validates the HMAC match
+  return csrfToken;
+}
+
 export async function fetchApi<T = unknown>(
   path: string,
   options: RequestInit = {}
@@ -21,8 +34,15 @@ export async function fetchApi<T = unknown>(
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string>),
   };
+
   if (hasBody && !headers["Content-Type"] && !(options.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
+  }
+
+  // CSRF: send token from cookie via header
+  const csrfToken = getCsrfHeader();
+  if (csrfToken && !headers["X-CSRF-Token"]) {
+    headers["X-CSRF-Token"] = csrfToken;
   }
 
   const res = await fetch(url, {
