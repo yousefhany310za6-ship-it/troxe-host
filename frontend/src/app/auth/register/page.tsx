@@ -29,7 +29,10 @@ export default function RegisterPage() {
 
       router.push("/dashboard");
     } catch (err: any) {
-      setError(err?.message || t("common.error"));
+      // Generic error to prevent user enumeration
+      setError(err?.status === 409
+        ? "An account with this email or username already exists."
+        : t("common.error"));
       setLoading(false);
     }
   }

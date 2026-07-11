@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import useSWR from "swr";
 import { fetchApi } from "@/lib/api";
 import {
@@ -43,6 +43,16 @@ export default function SettingsPage() {
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Clear sensitive state on unmount
+  useEffect(() => {
+    return () => {
+      setSecret("");
+      setQrCode("");
+      setCode("");
+      setRecoveryCodes([]);
+    };
+  }, []);
 
   async function startEnable() {
     setError(null);

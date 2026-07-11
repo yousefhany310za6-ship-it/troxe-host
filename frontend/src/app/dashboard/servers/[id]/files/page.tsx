@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback } from "react";
 import useSWR from "swr";
-import { fetchApi } from "@/lib/api";
+import { fetchApi, sanitizeFilename } from "@/lib/api";
 import Editor from "@monaco-editor/react";
 import {
   Upload,
@@ -215,7 +215,7 @@ export default function FilesPage({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = name;
+      a.download = sanitizeFilename(name);
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -325,7 +325,6 @@ export default function FilesPage({
     const fileName = file.name;
 
     setUploadProgress({ fileName, loaded: 0, total, percent: 0 });
-    console.log(`[Upload] Starting: ${fileName} (${(total / 1024).toFixed(1)} KB)`);
 
     const formData = new FormData();
     for (let i = 0; i < fileList.length; i++) {
@@ -343,13 +342,11 @@ export default function FilesPage({
           if (e.lengthComputable) {
             const percent = Math.round((e.loaded / e.total) * 100);
             setUploadProgress({ fileName, loaded: e.loaded, total: e.total, percent });
-            console.log(`[Upload] ${fileName}: ${percent}% (${(e.loaded / 1024).toFixed(1)} / ${(e.total / 1024).toFixed(1)} KB)`);
           }
         };
 
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) {
-            console.log(`[Upload] Done: ${fileName}`);
             resolve();
           } else {
             reject(new Error(`Upload failed: ${xhr.status}`));
@@ -361,7 +358,6 @@ export default function FilesPage({
       });
       mutate();
     } catch {
-      console.error(`[Upload] Failed: ${fileName}`);
       alert("Upload failed");
     } finally {
       setUploadProgress(null);

@@ -48,7 +48,10 @@ export default function LoginPage() {
         router.push("/dashboard");
         return;
       }
-      setError(err?.message || t("common.error"));
+      // Generic error to prevent user enumeration
+      setError(err?.status === 401 || err?.status === 400
+        ? "Invalid credentials. Please try again."
+        : t("common.error"));
       setLoading(false);
     }
   }

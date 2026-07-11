@@ -59,9 +59,11 @@ export default function SettingsPage({
     setSaving(true);
     setSaved(false);
     try {
+      const BLOCKED_KEYS = ["__proto__", "constructor", "prototype", "toString", "valueOf", "hasOwnProperty"];
       const env: Record<string, string> = {};
       environment.forEach(({ key, value }) => {
-        if (key.trim()) env[key] = value;
+        const k = key.trim();
+        if (k && !BLOCKED_KEYS.includes(k)) env[k] = value;
       });
       const body: Record<string, any> = { name, startup: startupCommand, environment: env };
       if (isAdmin) {

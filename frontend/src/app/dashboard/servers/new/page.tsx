@@ -82,9 +82,11 @@ export default function NewServerPage() {
     setSubmitting(true);
     setFormError("");
 
+    const BLOCKED_KEYS = ["__proto__", "constructor", "prototype", "toString", "valueOf", "hasOwnProperty"];
     const envObject: Record<string, string> = {};
     envVars.forEach(({ key, value }) => {
-      if (key.trim()) envObject[key.trim()] = value;
+      const k = key.trim();
+      if (k && !BLOCKED_KEYS.includes(k)) envObject[k] = value;
     });
 
     try {

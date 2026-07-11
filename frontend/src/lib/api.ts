@@ -13,16 +13,13 @@ export class ApiError extends Error {
 }
 
 function getCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
   const match = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
   return match ? decodeURIComponent(match[2]) : null;
 }
 
-function getCsrfHeader(): string {
-  const csrfToken = getCookie("troxe_csrf");
-  if (!csrfToken) return "";
-  // The header value is HMAC of the cookie value
-  // For client-side, we just send the raw token; server validates the HMAC match
-  return csrfToken;
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^\w\s.\-]/g, "_").replace(/\.\./g, "_").slice(0, 255);
 }
 
 export async function fetchApi<T = unknown>(
@@ -39,8 +36,8 @@ export async function fetchApi<T = unknown>(
     headers["Content-Type"] = "application/json";
   }
 
-  // CSRF: send token from cookie via header
-  const csrfToken = getCsrfHeader();
+  // CSRF: send token from cookie via header (double-submit pattern)
+  const csrfToken = getCookie("troxe_csrf");
   if (csrfToken && !headers["X-CSRF-Token"]) {
     headers["X-CSRF-Token"] = csrfToken;
   }
@@ -48,18 +45,31 @@ export async function fetchApi<T = unknown>(
   const res = await fetch(url, {
     ...options,
     headers,
-    credentials: "include",
+    credentials: "same-origin",
   });
 
-  const data = await res.json().catch(() => null);
+  // Validate Content-Type before parsing
+  const contentType = res.headers.get("content-type") || "";
+  let data: T | null = null;
+
+  if (contentType.includes("application/json")) {
+    data = await res.json().catch(() => null);
+  } else if (res.status !== 204) {
+    const text = await res.text().catch(() => null);
+    data = text as any;
+  }
 
   if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      (data as { error?: string } | null)?.error || res.statusText,
-      data
-    );
+    const errMsg =
+      typeof data === "object" && data !== null && "error" in data
+        ? (data as any).error
+        : typeof data === "string" && data.length > 0
+        ? data
+        : res.statusText;
+    throw new ApiError(res.status, errMsg, data);
   }
 
   return data as T;
 }
+
+export { sanitizeFilename };
