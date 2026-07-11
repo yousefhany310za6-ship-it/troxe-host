@@ -39,9 +39,13 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     console.log(`[Job] Creating server: ${serverId}`);
 
     const result = await db.query(
-      `SELECT s.*, n.fqdn, n.daemon_listen_port
+      `SELECT s.*, n.fqdn, n.daemon_listen_port, n.public_ip,
+              a.ip as alloc_ip, a.port as alloc_port,
+              e.container_port
        FROM servers s
        JOIN nodes n ON s.node_id = n.id
+       JOIN allocations a ON s.allocation_id = a.id
+       JOIN eggs e ON s.egg_id = e.id
        WHERE s.id = $1`,
       [serverId]
     );
@@ -80,7 +84,10 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
       cpu_percent: Number(server.cpu_percent),
       pid_limit: Number(server.pid_limit) || 512,
       data_path: `/var/lib/troxe/${serverId}`,
-      ports: [],
+      ports: server.alloc_port ? [{
+        host_port: Number(server.alloc_port),
+        container_port: Number(server.container_port) || 25565,
+      }] : [],
     });
 
     if (!createResp.ok) {

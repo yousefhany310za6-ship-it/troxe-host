@@ -35,6 +35,7 @@ interface ServerDetail {
   nodeId: string;
   ip: string;
   port: number;
+  publicIp: string;
   memoryLimit: number;
   memoryUsed: number;
   cpuLimit: number;
@@ -77,9 +78,13 @@ function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  const s = Math.floor(seconds % 60);
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  if (s > 0 || parts.length === 0) parts.push(`${s}s`);
+  return parts.join(" ");
 }
 
 const tabs = [
@@ -159,6 +164,7 @@ export default function ServerDetailPage({
   }
 
   const isRunning = (stats?.state || server.status) === "running";
+  const effectiveStatus = (stats?.state || server.status) as ServerDetail["status"];
 
   const statusInfo = [
     {
@@ -176,7 +182,8 @@ export default function ServerDetailPage({
     {
       icon: Globe,
       label: "Address",
-      value: `${server.ip}:${server.port}`,
+      value: server.publicIp ? `${server.publicIp}:${server.port}` : `${server.ip}:${server.port}`,
+      href: server.publicIp ? `http://${server.publicIp}:${server.port}` : undefined,
       color: "text-gray-400",
     },
   ];
@@ -224,11 +231,11 @@ export default function ServerDetailPage({
           <div className="space-y-1">
             <h1 className="text-2xl font-bold">{server.name}</h1>
             <p className="text-sm text-muted-foreground">
-              {server.ip}:{server.port}
+              {server.publicIp ? `${server.publicIp}:${server.port}` : `${server.ip}:${server.port}`}
             </p>
           </div>
-          <Badge variant={statusVariant[server.status]} className="text-sm">
-            {server.status}
+          <Badge variant={statusVariant[effectiveStatus]} className="text-sm">
+            {effectiveStatus}
           </Badge>
         </div>
 
@@ -237,7 +244,7 @@ export default function ServerDetailPage({
             size="sm"
             variant="outline"
             onClick={() => powerAction("start")}
-            disabled={powerLoading !== null || server.status === "running"}
+            disabled={powerLoading !== null || effectiveStatus === "running"}
           >
             <Play className="h-4 w-4 mr-1.5" />
             Start
@@ -246,7 +253,7 @@ export default function ServerDetailPage({
             size="sm"
             variant="outline"
             onClick={() => powerAction("stop")}
-            disabled={powerLoading !== null || server.status === "stopped"}
+            disabled={powerLoading !== null || effectiveStatus === "stopped"}
           >
             <Square className="h-4 w-4 mr-1.5" />
             Stop
@@ -272,7 +279,18 @@ export default function ServerDetailPage({
             <info.icon className={`h-5 w-5 flex-shrink-0 ${info.color}`} />
             <div className="min-w-0">
               <p className="text-xs text-muted-foreground">{info.label}</p>
-              <p className="text-sm font-semibold truncate">{info.value}</p>
+              {"href" in info && info.href ? (
+                <a
+                  href={info.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-semibold truncate text-blue-400 hover:underline"
+                >
+                  {info.value}
+                </a>
+              ) : (
+                <p className="text-sm font-semibold truncate">{info.value}</p>
+              )}
             </div>
           </div>
         ))}

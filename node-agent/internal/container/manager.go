@@ -130,11 +130,26 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContai
 	portBindings := nat.PortMap{}
 
 	for _, port := range opts.Ports {
-		p := nat.Port(fmt.Sprintf("%d/tcp", port))
+		containerPort := port.ContainerPort
+		if containerPort == 0 {
+			containerPort = port.HostPort
+		}
+		p := nat.Port(fmt.Sprintf("%d/tcp", containerPort))
 		exposedPorts[p] = struct{}{}
-		// For UDP
-		pu := nat.Port(fmt.Sprintf("%d/udp", port))
+		portBindings[p] = []nat.PortBinding{
+			{
+				HostIP:   "0.0.0.0",
+				HostPort: fmt.Sprintf("%d", port.HostPort),
+			},
+		}
+		pu := nat.Port(fmt.Sprintf("%d/udp", containerPort))
 		exposedPorts[pu] = struct{}{}
+		portBindings[pu] = []nat.PortBinding{
+			{
+				HostIP:   "0.0.0.0",
+				HostPort: fmt.Sprintf("%d", port.HostPort),
+			},
+		}
 	}
 
 	// Container config — run startup command via shell so env vars expand
@@ -569,6 +584,11 @@ func (m *Manager) GetAllocatedStats(ctx context.Context) (memoryMb int64, diskMb
 	return memoryMb, diskMb
 }
 
+type PortBinding struct {
+	HostPort      int `json:"host_port"`
+	ContainerPort int `json:"container_port"`
+}
+
 type CreateOptions struct {
 	ServerID    string
 	Image       string
@@ -578,5 +598,5 @@ type CreateOptions struct {
 	CpuPercent  float64
 	PidLimit    int64
 	DataPath    string
-	Ports       []int
+	Ports       []PortBinding
 }

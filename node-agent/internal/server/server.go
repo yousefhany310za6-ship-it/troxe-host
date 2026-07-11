@@ -196,15 +196,20 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 // --- Server Actions ---
 
+type PortBindingRequest struct {
+	HostPort      int `json:"host_port"`
+	ContainerPort int `json:"container_port"`
+}
+
 type CreateServerRequest struct {
-	Image       string            `json:"image"`
-	Startup     string            `json:"startup"`
-	Environment map[string]string `json:"environment"`
-	MemoryBytes int64             `json:"memory_bytes"`
-	CpuPercent  float64           `json:"cpu_percent"`
-	PidLimit    int64             `json:"pid_limit"`
-	DataPath    string            `json:"data_path"`
-	Ports       []int             `json:"ports"`
+	Image       string                `json:"image"`
+	Startup     string                `json:"startup"`
+	Environment map[string]string     `json:"environment"`
+	MemoryBytes int64                 `json:"memory_bytes"`
+	CpuPercent  float64              `json:"cpu_percent"`
+	PidLimit    int64                 `json:"pid_limit"`
+	DataPath    string                `json:"data_path"`
+	Ports       []PortBindingRequest  `json:"ports"`
 }
 
 func (s *Server) handleCreateServer(w http.ResponseWriter, r *http.Request) {
@@ -229,6 +234,15 @@ func (s *Server) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		req.PidLimit = 512
 	}
 
+	// Convert request ports to container port bindings
+	var portBindings []troxcontainer.PortBinding
+	for _, p := range req.Ports {
+		portBindings = append(portBindings, troxcontainer.PortBinding{
+			HostPort:      p.HostPort,
+			ContainerPort: p.ContainerPort,
+		})
+	}
+
 	sc, err := s.containerMgr.Create(r.Context(), troxcontainer.CreateOptions{
 		ServerID:    serverID,
 		Image:       req.Image,
@@ -238,7 +252,7 @@ func (s *Server) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		CpuPercent:  req.CpuPercent,
 		PidLimit:    req.PidLimit,
 		DataPath:    req.DataPath,
-		Ports:       req.Ports,
+		Ports:       portBindings,
 	})
 	if err != nil {
 		log.Printf("Failed to create container for %s: %v", serverID, err)

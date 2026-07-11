@@ -18,8 +18,9 @@ function mapServer(row: Record<string, any>) {
     nodeName: row.node_name,
     nodeFqdn: row.node_fqdn,
     owner: row.owner_username,
-    ip: row.node_fqdn || "",
-    port: 0,
+    ip: row.alloc_ip || row.node_fqdn || "",
+    port: row.alloc_port || 0,
+    publicIp: row.public_ip || "",
     memoryLimit: Number(row.memory_mb) || 0,
     memoryUsed: 0,
     cpuLimit: Number(row.cpu_percent) || 0,
@@ -106,18 +107,22 @@ export default async function serverRoutes(app: FastifyInstance) {
 
       if (isAdmin) {
         query = `
-          SELECT s.*, u.username as owner_username, n.name as node_name
+          SELECT s.*, u.username as owner_username, n.name as node_name,
+                 a.ip as alloc_ip, a.port as alloc_port
           FROM servers s
           JOIN users u ON s.owner_id = u.id
           JOIN nodes n ON s.node_id = n.id
+          LEFT JOIN allocations a ON s.allocation_id = a.id
           ORDER BY s.created_at DESC
         `;
         params = [];
       } else {
         query = `
-          SELECT s.*, n.name as node_name
+          SELECT s.*, n.name as node_name,
+                 a.ip as alloc_ip, a.port as alloc_port
           FROM servers s
           JOIN nodes n ON s.node_id = n.id
+          LEFT JOIN allocations a ON s.allocation_id = a.id
           WHERE s.owner_id = $1
           ORDER BY s.created_at DESC
         `;
@@ -138,11 +143,13 @@ export default async function serverRoutes(app: FastifyInstance) {
 
       const result = await app.db.query(
         `SELECT s.*, u.username as owner_username, n.name as node_name,
-                n.fqdn as node_fqdn, e.name as egg_name
+                n.fqdn as node_fqdn, n.public_ip, e.name as egg_name,
+                a.ip as alloc_ip, a.port as alloc_port
          FROM servers s
          JOIN users u ON s.owner_id = u.id
          JOIN nodes n ON s.node_id = n.id
          JOIN eggs e ON s.egg_id = e.id
+         LEFT JOIN allocations a ON s.allocation_id = a.id
          WHERE s.id = $1`,
         [id]
       );
