@@ -373,8 +373,18 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	events := s.containerMgr.GetEvents(serverID)
+	eventLines := make([]map[string]interface{}, 0, len(events))
+	for _, ev := range events {
+		eventLines = append(eventLines, map[string]interface{}{
+			"type":      ev.Type,
+			"timestamp": ev.Timestamp.Format(time.RFC3339),
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"logs": logs,
+		"logs":   logs,
+		"events": eventLines,
 	})
 }
 

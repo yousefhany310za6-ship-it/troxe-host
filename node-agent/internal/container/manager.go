@@ -28,12 +28,18 @@ type Manager struct {
 	dataDirectory string
 }
 
+type ServerEvent struct {
+	Type      string    // "start", "stop", "restart"
+	Timestamp time.Time
+}
+
 type ServerContainer struct {
 	ServerID    string
 	ContainerID string
 	Status      string
 	Image       string
 	StartedAt   time.Time
+	Events      []ServerEvent
 }
 
 func NewManager(dockerSocket string, dataDirectory string) (*Manager, error) {
@@ -217,6 +223,7 @@ func (m *Manager) Start(ctx context.Context, serverID string) error {
 	}
 
 	sc.StartedAt = time.Now()
+	sc.Events = append(sc.Events, ServerEvent{Type: "start", Timestamp: sc.StartedAt})
 
 	if err := m.client.ContainerStart(ctx, sc.ContainerID, container.StartOptions{}); err != nil {
 		return fmt.Errorf("failed to start container: %w", err)
@@ -240,6 +247,7 @@ func (m *Manager) Stop(ctx context.Context, serverID string) error {
 	}
 
 	sc.Status = "stopped"
+	sc.Events = append(sc.Events, ServerEvent{Type: "stop", Timestamp: time.Now()})
 	return nil
 }
 
@@ -499,6 +507,16 @@ func getDirSizeRecursive(path string) uint64 {
 		}
 	}
 	return size
+}
+
+func (m *Manager) GetEvents(serverID string) []ServerEvent {
+	m.mu.RLock()
+	sc, ok := m.containers[serverID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return sc.Events
 }
 
 func (m *Manager) ListAll(ctx context.Context) ([]*ServerContainer, error) {

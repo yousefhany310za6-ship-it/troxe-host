@@ -31,13 +31,14 @@ export default async function consoleRoutes(app: FastifyInstance) {
       }
 
       const rawLogs = (resp.data as any)?.logs || "";
+      const rawEvents = (resp.data as any)?.events || [];
       const lines = rawLogs.split("\n").filter(Boolean).map((line: string, i: number) => ({
         line: i + 1,
         content: line,
         timestamp: new Date().toISOString(),
       }));
 
-      return reply.send({ logs: lines });
+      return reply.send({ logs: lines, events: rawEvents });
     }
   );
 
