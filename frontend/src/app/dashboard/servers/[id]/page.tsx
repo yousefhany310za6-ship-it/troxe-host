@@ -1,8 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
 import useSWR from "swr";
 import { fetchApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -10,19 +8,13 @@ import {
   Play,
   Square,
   RotateCw,
-  Terminal,
-  Folder,
-  Database,
-  Clock,
-  Users,
-  Settings,
   Cpu,
   HardDrive,
   MemoryStick,
   Globe,
-  Activity,
   Wifi,
   WifiOff,
+  Clock,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -87,23 +79,12 @@ function formatUptime(seconds: number): string {
   return parts.join(" ");
 }
 
-const tabs = [
-  { name: "Overview", href: "", icon: Globe },
-  { name: "Console", href: "console", icon: Terminal },
-  { name: "Files", href: "files", icon: Folder },
-  { name: "Backups", href: "backups", icon: Database },
-  { name: "Schedules", href: "schedules", icon: Clock },
-  { name: "Subusers", href: "subusers", icon: Users },
-  { name: "Settings", href: "settings", icon: Settings },
-];
-
 export default function ServerDetailPage({
   params,
 }: {
   params: { id: string };
 }) {
   const { id } = params;
-  const pathname = usePathname();
   const [powerLoading, setPowerLoading] = useState<string | null>(null);
 
   const { data, error, isLoading } = useSWR<{ server: ServerDetail }>(
@@ -118,10 +99,6 @@ export default function ServerDetailPage({
     { refreshInterval: 5000 }
   );
   const stats = statsData?.stats;
-
-  const activeTab = pathname === `/dashboard/servers/${id}`
-    ? ""
-    : pathname.replace(`/dashboard/servers/${id}/`, "");
 
   async function powerAction(action: "start" | "stop" | "restart") {
     setPowerLoading(action);
@@ -318,33 +295,6 @@ export default function ServerDetailPage({
           </Card>
         ))}
       </div>
-
-      <nav className="flex gap-1 border-b border-border overflow-x-auto">
-        {tabs.map((tab) => {
-          const isActive = activeTab === tab.href;
-          return (
-            <Link
-              key={tab.name}
-              href={`/dashboard/servers/${id}${tab.href ? `/${tab.href}` : ""}`}
-              className={cn(
-                "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap",
-                isActive
-                  ? "border-brand-500 text-brand-400"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <tab.icon className="h-4 w-4" />
-              {tab.name}
-            </Link>
-          );
-        })}
-      </nav>
-
-      <Card>
-        <CardContent className="p-6 text-center text-muted-foreground">
-          Select a tab to view details.
-        </CardContent>
-      </Card>
     </div>
   );
 }

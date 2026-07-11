@@ -4,6 +4,7 @@ import jwt from "@fastify/jwt";
 import rateLimit from "@fastify/rate-limit";
 import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
+import multipart from "@fastify/multipart";
 import { config } from "./config/env.js";
 import { db, testDatabase } from "./config/database.js";
 import { redis, testRedis } from "./config/redis.js";
@@ -65,6 +66,12 @@ await app.register(cookie, {
 });
 
 await app.register(websocket);
+
+await app.register(multipart, {
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB
+  },
+});
 
 // Health check
 app.get("/health", async () => {

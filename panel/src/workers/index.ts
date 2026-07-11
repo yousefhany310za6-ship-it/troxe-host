@@ -41,11 +41,11 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     const result = await db.query(
       `SELECT s.*, n.fqdn, n.daemon_listen_port, n.public_ip,
               a.ip as alloc_ip, a.port as alloc_port,
-              e.container_port
+              e.container_port, e.install_script
        FROM servers s
        JOIN nodes n ON s.node_id = n.id
-       JOIN allocations a ON s.allocation_id = a.id
-       JOIN eggs e ON s.egg_id = e.id
+       LEFT JOIN allocations a ON s.allocation_id = a.id
+       LEFT JOIN eggs e ON s.egg_id = e.id
        WHERE s.id = $1`,
       [serverId]
     );
@@ -73,13 +73,14 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
 
     const startupCmd = server.startup_command || "";
 
+    // Step 0: Remove any existing container
+    await agentPost(node, `/api/servers/${serverId}/remove`);
+
+    // Step 1: Create container with keep-alive for install
     const createResp = await agentPost(node, `/api/servers/${serverId}/create`, {
       image: server.docker_image,
-      startup: startupCmd,
-      environment: {
-        ...environment,
-        STARTUP: startupCmd,
-      },
+      startup: "sleep infinity",
+      environment: { ...environment, STARTUP: "sleep infinity" },
       memory_bytes: Number(server.memory_mb) * 1024 * 1024,
       cpu_percent: Number(server.cpu_percent),
       pid_limit: Number(server.pid_limit) || 512,
@@ -98,10 +99,56 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
       throw new Error(`Failed to create container: ${createResp.error}`);
     }
 
-    // Start the container
+    // Step 2: Start keep-alive container
     const startResp = await agentPost(node, `/api/servers/${serverId}/start`);
     if (!startResp.ok) {
       console.warn(`[Job] Warning: container created but failed to start: ${startResp.error}`);
+    }
+
+    // Step 3: Run install script as root
+    const installScript = server.install_script || "";
+    if (installScript) {
+      console.log(`[Job] Running install script for ${serverId}...`);
+      const installResp = await agentPost(node, `/api/servers/${serverId}/install`, {
+        command: installScript,
+      });
+      if (!installResp.ok) {
+        console.warn(`[Job] Install script failed (continuing): ${installResp.error}`);
+      } else {
+        console.log(`[Job] Install script completed for ${serverId}`);
+      }
+    }
+
+    // Step 4: Remove keep-alive container
+    await agentPost(node, `/api/servers/${serverId}/remove`);
+
+    // Step 5: Recreate with real startup
+    const createFinal = await agentPost(node, `/api/servers/${serverId}/create`, {
+      image: server.docker_image,
+      startup: startupCmd,
+      environment: { ...environment, STARTUP: startupCmd },
+      memory_bytes: Number(server.memory_mb) * 1024 * 1024,
+      cpu_percent: Number(server.cpu_percent),
+      pid_limit: Number(server.pid_limit) || 512,
+      data_path: `/var/lib/troxe/${serverId}`,
+      ports: server.alloc_port ? [{
+        host_port: Number(server.alloc_port),
+        container_port: Number(server.container_port) || 25565,
+      }] : [],
+    });
+
+    if (!createFinal.ok) {
+      await db.query(
+        `UPDATE servers SET status = 'install_failed' WHERE id = $1`,
+        [serverId]
+      );
+      throw new Error(`Failed to recreate container after install: ${createFinal.error}`);
+    }
+
+    // Step 6: Start real server
+    const finalStart = await agentPost(node, `/api/servers/${serverId}/start`);
+    if (!finalStart.ok) {
+      console.warn(`[Job] Warning: install done but failed to start: ${finalStart.error}`);
     }
 
     await db.query(
@@ -122,9 +169,106 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     const node = await getNodeForServer(serverId, db);
     if (!node) throw new Error(`Node not found for server ${serverId}`);
 
+    // Load server + egg data
+    const result = await db.query(
+      `SELECT s.*, a.port as alloc_port, e.container_port, e.install_script
+       FROM servers s
+       LEFT JOIN allocations a ON s.allocation_id = a.id
+       LEFT JOIN eggs e ON s.egg_id = e.id
+       WHERE s.id = $1`,
+      [serverId]
+    );
+    if (result.rows.length === 0) throw new Error(`Server ${serverId} not found`);
+    const srv = result.rows[0];
+
+    const environment =
+      typeof srv.environment === "string"
+        ? JSON.parse(srv.environment)
+        : srv.environment || {};
+
+    // Step 0: Remove any existing container first
+    await agentPost(node, `/api/servers/${serverId}/remove`);
+
+    // Step 1: Create container with a keep-alive command for install
+    const createResp = await agentPost(node, `/api/servers/${serverId}/create`, {
+      image: srv.docker_image,
+      startup: "sleep infinity",
+      environment: { ...environment, STARTUP: "sleep infinity" },
+      memory_bytes: Number(srv.memory_mb) * 1024 * 1024,
+      cpu_percent: Number(srv.cpu_percent),
+      pid_limit: Number(srv.pid_limit) || 512,
+      data_path: `/var/lib/troxe/${serverId}`,
+      ports: srv.alloc_port ? [{
+        host_port: Number(srv.alloc_port),
+        container_port: Number(srv.container_port) || 25565,
+      }] : [],
+    });
+
+    if (!createResp.ok) {
+      await db.query(
+        `UPDATE servers SET status = 'install_failed' WHERE id = $1`,
+        [serverId]
+      );
+      throw new Error(`Failed to create container for install: ${createResp.error}`);
+    }
+
+    // Step 2: Start the keep-alive container
     const startResp = await agentPost(node, `/api/servers/${serverId}/start`);
     if (!startResp.ok) {
+      await db.query(
+        `UPDATE servers SET status = 'install_failed' WHERE id = $1`,
+        [serverId]
+      );
       throw new Error(`Failed to start container for install: ${startResp.error}`);
+    }
+
+    // Step 3: Run install script as root inside the container
+    const installScript = srv.install_script || "";
+    if (installScript) {
+      console.log(`[Job] Running install script for ${serverId}...`);
+      const installResp = await agentPost(node, `/api/servers/${serverId}/install`, {
+        command: installScript,
+      });
+
+      if (!installResp.ok) {
+        console.warn(`[Job] Install script failed: ${installResp.error}`);
+        // Continue anyway — server might still work (e.g. user upload mode)
+      } else {
+        console.log(`[Job] Install script completed for ${serverId}`);
+      }
+    }
+
+    // Step 4: Kill and remove the temporary keep-alive container
+    await agentPost(node, `/api/servers/${serverId}/remove`);
+
+    // Step 5: Recreate with the real startup command
+    const realStartup = srv.startup_command || "";
+    const createFinal = await agentPost(node, `/api/servers/${serverId}/create`, {
+      image: srv.docker_image,
+      startup: realStartup,
+      environment: { ...environment, STARTUP: realStartup },
+      memory_bytes: Number(srv.memory_mb) * 1024 * 1024,
+      cpu_percent: Number(srv.cpu_percent),
+      pid_limit: Number(srv.pid_limit) || 512,
+      data_path: `/var/lib/troxe/${serverId}`,
+      ports: srv.alloc_port ? [{
+        host_port: Number(srv.alloc_port),
+        container_port: Number(srv.container_port) || 25565,
+      }] : [],
+    });
+
+    if (!createFinal.ok) {
+      await db.query(
+        `UPDATE servers SET status = 'install_failed' WHERE id = $1`,
+        [serverId]
+      );
+      throw new Error(`Failed to recreate container after install: ${createFinal.error}`);
+    }
+
+    // Step 6: Start the real server
+    const finalStart = await agentPost(node, `/api/servers/${serverId}/start`);
+    if (!finalStart.ok) {
+      console.warn(`[Job] Warning: install done but failed to start server: ${finalStart.error}`);
     }
 
     await db.query(
@@ -244,6 +388,38 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     });
   },
 
+  "server.kill": async (job) => {
+    const { serverId } = job.data;
+    console.log(`[Job] Killing server: ${serverId}`);
+
+    await db.query(
+      `UPDATE servers SET status = 'stopping' WHERE id = $1`,
+      [serverId]
+    );
+
+    const node = await getNodeForServer(serverId, db);
+    if (!node) throw new Error(`Node not found for server ${serverId}`);
+
+    const resp = await agentPost(node, `/api/servers/${serverId}/kill`);
+    if (!resp.ok) {
+      if (resp.error && resp.error.includes("container not found")) {
+        console.log(`[Job] Container not tracked for ${serverId}, treating as stopped`);
+      } else {
+        throw new Error(`Failed to kill server: ${resp.error}`);
+      }
+    }
+
+    await db.query(
+      `UPDATE servers SET status = 'stopped' WHERE id = $1`,
+      [serverId]
+    );
+
+    await eventBus.emit("server.stopped", {
+      subjectType: "server",
+      subjectId: serverId,
+    });
+  },
+
   "server.restart": async (job) => {
     const { serverId } = job.data;
     console.log(`[Job] Restarting server: ${serverId}`);
@@ -256,10 +432,10 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     const node = await getNodeForServer(serverId, db);
     if (!node) throw new Error(`Node not found for server ${serverId}`);
 
-    // Stop first (tolerate "not found" — container may already be gone)
-    const stopResp = await agentPost(node, `/api/servers/${serverId}/stop`);
+    // Kill first (instant SIGKILL, tolerate "not found")
+    const stopResp = await agentPost(node, `/api/servers/${serverId}/kill`);
     if (!stopResp.ok && stopResp.error && !stopResp.error.includes("container not found")) {
-      console.warn(`[Job] Stop before restart failed: ${stopResp.error}`);
+      console.warn(`[Job] Kill before restart failed: ${stopResp.error}`);
     }
 
     // Create if needed, then start (reuse server.start logic)

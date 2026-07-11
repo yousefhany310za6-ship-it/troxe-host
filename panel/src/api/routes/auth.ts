@@ -146,6 +146,7 @@ export default async function authRoutes(app: FastifyInstance) {
         username: user.username,
         email: user.email,
         rootAdmin: user.root_admin,
+        isAdmin: user.root_admin,
       },
     });
   });

@@ -85,6 +85,16 @@ export default async function monitoringRoutes(app: FastifyInstance) {
 
       const network = agentStats.network || { rx_bytes: 0, tx_bytes: 0 };
 
+      const agentState = agentStats.state || server.status;
+
+      // Sync DB status if agent reports a different state
+      if (agentState !== server.status && ["running", "stopped", "crashed"].includes(agentState)) {
+        await app.db.query(
+          `UPDATE servers SET status = $1 WHERE id = $2`,
+          [agentState, id]
+        );
+      }
+
       const stats = {
         memory: {
           used: memUsed,
@@ -105,7 +115,7 @@ export default async function monitoringRoutes(app: FastifyInstance) {
           tx: network.tx_bytes || 0,
         },
         uptime: agentStats.uptime || 0,
-        state: agentStats.state || server.status,
+        state: agentState,
         timestamp: new Date().toISOString(),
       };
 

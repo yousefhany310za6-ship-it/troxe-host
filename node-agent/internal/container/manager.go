@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,6 +115,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContai
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
+	// Chown data directory to container user (1000:1000) so container can write files
+	if err := chownRecursive(opts.DataPath, 1000, 1000); err != nil {
+		log.Printf("[container] warning: failed to chown data dir %s: %v", opts.DataPath, err)
+	}
+
 	// Pull image if not exists
 	_, err := m.client.ImagePull(ctx, opts.Image, image.PullOptions{})
 	if err != nil {
@@ -165,7 +172,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContai
 		},
 	}
 	if opts.Startup != "" {
-		containerConfig.Cmd = []string{"/bin/sh", "-c", opts.Startup}
+		mainFile := extractMainFile(opts.Startup)
+		wrapper := buildStartupWrapper(opts.Startup, mainFile)
+		containerConfig.Cmd = []string{"/bin/sh", "-c", wrapper}
 	}
 
 	// Host config with security
@@ -241,6 +250,14 @@ func (m *Manager) Start(ctx context.Context, serverID string) error {
 	sc.Events = append(sc.Events, ServerEvent{Type: "start", Timestamp: sc.StartedAt})
 
 	if err := m.client.ContainerStart(ctx, sc.ContainerID, container.StartOptions{}); err != nil {
+		errStr := err.Error()
+		// If Docker says the container doesn't exist, remove stale entry
+		if strings.Contains(errStr, "No such container") || strings.Contains(errStr, "no such container") {
+			m.mu.Lock()
+			delete(m.containers, serverID)
+			m.mu.Unlock()
+			return fmt.Errorf("container not found for server %s", serverID)
+		}
 		return fmt.Errorf("failed to start container: %w", err)
 	}
 
@@ -256,7 +273,7 @@ func (m *Manager) Stop(ctx context.Context, serverID string) error {
 		return fmt.Errorf("container not found for server %s", serverID)
 	}
 
-	timeout := 30 // seconds
+	timeout := 5 // seconds
 	if err := m.client.ContainerStop(ctx, sc.ContainerID, container.StopOptions{Timeout: &timeout}); err != nil {
 		return fmt.Errorf("failed to stop container: %w", err)
 	}
@@ -293,17 +310,29 @@ func (m *Manager) Remove(ctx context.Context, serverID string) error {
 	m.mu.RLock()
 	sc, ok := m.containers[serverID]
 	m.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("container not found for server %s", serverID)
+
+	if ok {
+		if err := m.client.ContainerRemove(ctx, sc.ContainerID, container.RemoveOptions{Force: true}); err != nil {
+			return fmt.Errorf("failed to remove container: %w", err)
+		}
+		m.mu.Lock()
+		delete(m.containers, serverID)
+		m.mu.Unlock()
+		return nil
 	}
 
-	if err := m.client.ContainerRemove(ctx, sc.ContainerID, container.RemoveOptions{Force: true}); err != nil {
-		return fmt.Errorf("failed to remove container: %w", err)
+	// Not in memory — find and force-remove by label from Docker
+	containers, err := m.client.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("label", "troxe.server_id="+serverID)),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	m.mu.Lock()
-	delete(m.containers, serverID)
-	m.mu.Unlock()
+	for _, c := range containers {
+		_ = m.client.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
+	}
 
 	return nil
 }
@@ -471,6 +500,22 @@ func (m *Manager) GetStats(ctx context.Context, serverID string) (map[string]int
 	// Disk = data directory size
 	diskBytes := getDirSize(m.dataDirectory, serverID)
 
+	// Get actual state from Docker, not just in-memory cache
+	actualState := sc.Status
+	if err == nil && inspect.State != nil {
+		if inspect.State.Running {
+			actualState = "running"
+		} else if inspect.State.OOMKilled {
+			actualState = "crashed"
+		} else if inspect.State.ExitCode != 0 {
+			actualState = "crashed"
+		} else {
+			actualState = "stopped"
+		}
+		// Sync in-memory cache
+		sc.Status = actualState
+	}
+
 	return map[string]interface{}{
 		"memory_bytes":       memUsage,
 		"memory_limit_bytes": memLimit,
@@ -480,7 +525,7 @@ func (m *Manager) GetStats(ctx context.Context, serverID string) (map[string]int
 			"tx_bytes": txBytes,
 		},
 		"uptime":     uptime,
-		"state":      sc.Status,
+		"state":      actualState,
 		"disk_bytes": diskBytes,
 	}, nil
 }
@@ -599,4 +644,140 @@ type CreateOptions struct {
 	PidLimit    int64
 	DataPath    string
 	Ports       []PortBinding
+}
+
+// extractMainFile tries to extract the main file from a startup command
+// e.g. "node server.js" → "server.js", "java -jar server.jar" → "server.jar"
+func extractMainFile(startup string) string {
+	trimmed := strings.TrimSpace(startup)
+	parts := strings.Fields(trimmed)
+	if len(parts) == 0 {
+		return ""
+	}
+
+	// Skip common interpreters/runtimes
+	interpreters := map[string]bool{
+		"node": true, "python": true, "python3": true, "java": true,
+		"ruby": true, "php": true, "dotnet": true, "go": true,
+		"bash": true, "sh": true, "zsh": true, "./start.sh": true,
+	}
+
+	// If starts with "./" it's likely the file itself
+	if strings.HasPrefix(parts[0], "./") {
+		return parts[0]
+	}
+
+	// For "node server.js", "python main.py", etc.
+	if len(parts) >= 2 && interpreters[parts[0]] {
+		return parts[1]
+	}
+
+	// For "java -jar server.jar" — find the .jar after -jar
+	for i, part := range parts {
+		if part == "-jar" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+
+	// For dotnet: "dotnet run --project ." or "dotnet MyServer.dll"
+	if parts[0] == "dotnet" {
+		for i, part := range parts {
+			if part == "--project" && i+1 < len(parts) {
+				return ""
+			}
+			if strings.HasSuffix(part, ".dll") {
+				return part
+			}
+		}
+	}
+
+	return ""
+}
+
+// chownRecursive recursively changes ownership of a directory tree.
+func chownRecursive(path string, uid, gid int) error {
+	return filepath.Walk(path, func(name string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chown(name, uid, gid)
+	})
+}
+
+// ExecWithUser runs a command inside a container as a specific user.
+func (m *Manager) ExecWithUser(ctx context.Context, serverID string, cmd []string, user string) (string, error) {
+	m.mu.RLock()
+	sc, ok := m.containers[serverID]
+	m.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("container not found for server %s", serverID)
+	}
+
+	execConfig := container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+		User:         user,
+	}
+
+	execResp, err := m.client.ContainerExecCreate(ctx, sc.ContainerID, execConfig)
+	if err != nil {
+		return "", err
+	}
+
+	hijacked, err := m.client.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return "", err
+	}
+	defer hijacked.Close()
+
+	data, err := io.ReadAll(hijacked.Reader)
+	if err != nil {
+		return "", err
+	}
+
+	return string(data), nil
+}
+
+// ExecWithUserRunning is like ExecWithUser but ensures the container is running first.
+// If the container is stopped, it starts it, runs the command, then stops it.
+func (m *Manager) ExecWithUserRunning(ctx context.Context, serverID string, cmd []string, user string) (string, error) {
+	m.mu.RLock()
+	sc, ok := m.containers[serverID]
+	m.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("container not found for server %s", serverID)
+	}
+
+	// Check if running
+	inspect, err := m.client.ContainerInspect(ctx, sc.ContainerID)
+	if err != nil {
+		return "", err
+	}
+
+	wasRunning := inspect.State != nil && inspect.State.Running
+	if !wasRunning {
+		if err := m.client.ContainerStart(ctx, sc.ContainerID, container.StartOptions{}); err != nil {
+			return "", fmt.Errorf("failed to start container for exec: %w", err)
+		}
+		defer func() {
+			timeout := 5
+			m.client.ContainerStop(context.Background(), sc.ContainerID, container.StopOptions{Timeout: &timeout})
+		}()
+	}
+
+	return m.ExecWithUser(ctx, serverID, cmd, user)
+}
+
+// buildStartupWrapper wraps the startup command with a pre-check
+func buildStartupWrapper(startup, mainFile string) string {
+	if mainFile == "" {
+		return startup
+	}
+
+	// Build a wrapper that checks if the file exists before running
+	return fmt.Sprintf(
+		`if [ ! -f %q ]; then echo ""; echo "=========================================="; echo "  ERROR: Main file not found: %s"; echo "  Expected location: /home/container/%s"; echo ""; echo "  Files in /home/container:"; ls -la 2>/dev/null; echo "=========================================="; exit 1; fi; %s`,
+		mainFile, mainFile, mainFile, startup,
+	)
 }

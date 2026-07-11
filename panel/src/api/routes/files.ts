@@ -229,7 +229,21 @@ export default async function fileRoutes(app: FastifyInstance) {
       ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      return reply.send({ success: true, message: "Compression not yet implemented" });
+      const { id } = request.params as { id: string };
+      const { path: filePath, name } = request.body as { path: string; name: string };
+
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.status(404).send({ error: "Node not found" });
+      }
+
+      const resp = await agentPost(node, `/api/servers/${id}/files/compress`, { path: filePath, name });
+
+      if (!resp.ok) {
+        return reply.status(resp.status || 500).send({ error: resp.error });
+      }
+
+      return reply.send(resp.data);
     }
   );
 
@@ -243,7 +257,20 @@ export default async function fileRoutes(app: FastifyInstance) {
       ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      return reply.send({ success: true, message: "Decompression not yet implemented" });
+      const { id } = request.params as { id: string };
+      const { path } = request.body as { path: string };
+      const node = await getNodeForServer(id, app.db);
+      if (!node) {
+        return reply.status(404).send({ error: "Node not found" });
+      }
+
+      const resp = await agentPost(node, `/api/servers/${id}/files/decompress`, { path });
+
+      if (!resp.ok) {
+        return reply.status(resp.status || 500).send({ error: resp.error });
+      }
+
+      return reply.send(resp.data);
     }
   );
 
@@ -264,7 +291,7 @@ export default async function fileRoutes(app: FastifyInstance) {
       }
 
       const token = signAgentJWT("system");
-      const agentUrl = `http://${node.fqdn}:${node.daemon_listen_port}/api/servers/${id}/upload`;
+      const agentUrl = `http://${node.fqdn}:${node.daemon_listen_port}/api/servers/${id}/files/upload`;
 
       const contentType = request.headers["content-type"] || "";
       const contentLength = request.headers["content-length"];
@@ -279,7 +306,8 @@ export default async function fileRoutes(app: FastifyInstance) {
       const resp = await fetch(agentUrl, {
         method: "POST",
         headers,
-        body: request.raw,
+        body: request.raw as any,
+        duplex: "half",
       });
 
       const data = await resp.json().catch(() => ({}));

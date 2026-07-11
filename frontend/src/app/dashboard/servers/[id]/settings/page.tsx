@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import useSWR from "swr";
 import { fetchApi } from "@/lib/api";
-import { Settings, Save, Trash2, AlertTriangle, Plus, X } from "lucide-react";
+import { useAuthStore } from "@/stores/auth";
+import { Settings, Save, Trash2, AlertTriangle, Plus, X, Lock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -22,10 +23,13 @@ export default function SettingsPage({
   params: { id: string };
 }) {
   const { id } = params;
-  const { data: settings, error, isLoading } = useSWR<ServerSettings>(
+  const user = useAuthStore((s) => s.user);
+  const isAdmin = user?.rootAdmin || user?.isAdmin;
+  const { data, error, isLoading } = useSWR<{ server: ServerSettings }>(
     `/api/v1/servers/${id}/settings`,
-    (url: string) => fetchApi<ServerSettings>(url)
+    (url: string) => fetchApi<{ server: ServerSettings }>(url)
   );
+  const settings = data?.server;
 
   const [name, setName] = useState("");
   const [startupCommand, setStartupCommand] = useState("");
@@ -34,31 +38,43 @@ export default function SettingsPage({
   const [diskLimit, setDiskLimit] = useState(1024);
   const [environment, setEnvironment] = useState<Array<{ key: string; value: string }>>([]);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (settings) {
-      setName(settings.name);
-      setStartupCommand(settings.startupCommand);
-      setMemoryLimit(settings.memoryLimit);
-      setCpuLimit(settings.cpuLimit);
-      setDiskLimit(settings.diskLimit);
+      setName(settings.name || "");
+      setStartupCommand(settings.startup_command || settings.startupCommand || "");
+      setMemoryLimit(settings.memory_mb || settings.memoryLimit || 512);
+      setCpuLimit(settings.cpu_percent || settings.cpuLimit || 100);
+      setDiskLimit(settings.disk_mb || settings.diskLimit || 1024);
       setEnvironment(
-        Object.entries(settings.environment).map(([key, value]) => ({ key, value }))
+        settings.environment
+          ? Object.entries(settings.environment).map(([key, value]) => ({ key, value: String(value) }))
+          : []
       );
     }
   }, [settings]);
 
   async function handleSave() {
     setSaving(true);
+    setSaved(false);
     try {
       const env: Record<string, string> = {};
       environment.forEach(({ key, value }) => {
         if (key.trim()) env[key] = value;
       });
+      const body: Record<string, any> = { name, startup: startupCommand, environment: env };
+      if (isAdmin) {
+        body.memoryMb = memoryLimit;
+        body.cpuPercent = cpuLimit;
+        body.diskMb = diskLimit;
+      }
       await fetchApi(`/api/v1/servers/${id}/settings`, {
-        method: "PATCH",
-        body: JSON.stringify({ name, startupCommand, memoryLimit, cpuLimit, diskLimit, environment: env }),
+        method: "PUT",
+        body: JSON.stringify(body),
       });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
     } catch {
     } finally {
       setSaving(false);
@@ -128,9 +144,12 @@ export default function SettingsPage({
           <Settings className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-2xl font-bold">Settings</h1>
         </div>
-        <Button onClick={handleSave} disabled={saving}>
-          <Save className="h-4 w-4 mr-2" />
-          {saving ? "Saving..." : "Save Changes"}
+        <Button onClick={handleSave} disabled={saving} variant={saved ? "default" : "default"}>
+          {saved ? (
+            <span className="flex items-center text-green-400"><Save className="h-4 w-4 mr-2" /> Saved!</span>
+          ) : (
+            <><Save className="h-4 w-4 mr-2" />{saving ? "Saving..." : "Save Changes"}</>
+          )}
         </Button>
       </div>
 
@@ -155,16 +174,42 @@ export default function SettingsPage({
               type="text"
               value={startupCommand}
               onChange={(e) => setStartupCommand(e.target.value)}
+              placeholder="node server.js"
               className="w-full bg-secondary border border-border rounded-lg px-4 py-2.5 text-sm text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
+            <p className="text-xs text-muted-foreground">
+              Command to run when the server starts. The main file must exist in the root directory.
+            </p>
+            <div className="flex flex-wrap gap-2 mt-1">
+              {["node index.js", "python main.py", "java -jar server.jar", "./start.sh"].map((ex) => (
+                <button
+                  key={ex}
+                  type="button"
+                  onClick={() => setStartupCommand(ex)}
+                  className="text-xs bg-secondary/50 hover:bg-secondary border border-border rounded px-2 py-1 font-mono text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
           </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Resources</CardTitle>
-          <CardDescription>Adjust resource allocation limits</CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Resources</CardTitle>
+              <CardDescription>Adjust resource allocation limits</CardDescription>
+            </div>
+            {!isAdmin && (
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground bg-secondary px-2.5 py-1 rounded-md">
+                <Lock className="h-3 w-3" />
+                Admin only
+              </span>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="space-y-2">
@@ -179,7 +224,8 @@ export default function SettingsPage({
               step={128}
               value={memoryLimit}
               onChange={(e) => setMemoryLimit(Number(e.target.value))}
-              className="w-full accent-brand-500"
+              disabled={!isAdmin}
+              className="w-full accent-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
             />
           </div>
           <div className="space-y-2">
@@ -194,7 +240,8 @@ export default function SettingsPage({
               step={10}
               value={cpuLimit}
               onChange={(e) => setCpuLimit(Number(e.target.value))}
-              className="w-full accent-brand-500"
+              disabled={!isAdmin}
+              className="w-full accent-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
             />
           </div>
           <div className="space-y-2">
@@ -209,14 +256,15 @@ export default function SettingsPage({
               step={256}
               value={diskLimit}
               onChange={(e) => setDiskLimit(Number(e.target.value))}
-              className="w-full accent-brand-500"
+              disabled={!isAdmin}
+              className="w-full accent-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
             />
           </div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <CardTitle>Environment Variables</CardTitle>
             <CardDescription>Set environment variables for the server</CardDescription>
@@ -231,25 +279,25 @@ export default function SettingsPage({
             <p className="text-sm text-muted-foreground">No environment variables configured.</p>
           ) : (
             environment.map((env, i) => (
-              <div key={i} className="flex items-center gap-2">
+              <div key={i} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 <input
                   type="text"
                   value={env.key}
                   onChange={(e) => updateEnvVar(i, "key", e.target.value)}
                   placeholder="KEY"
-                  className="flex-1 bg-secondary border border-border rounded-lg px-4 py-2.5 text-sm text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="flex-1 min-w-0 bg-secondary border border-border rounded-lg px-4 py-2.5 text-sm text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
                 />
                 <input
                   type="text"
                   value={env.value}
                   onChange={(e) => updateEnvVar(i, "value", e.target.value)}
                   placeholder="value"
-                  className="flex-1 bg-secondary border border-border rounded-lg px-4 py-2.5 text-sm text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="flex-1 min-w-0 bg-secondary border border-border rounded-lg px-4 py-2.5 text-sm text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
                 />
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-10 w-10 p-0 text-destructive hover:text-destructive"
+                  className="h-10 w-10 p-0 text-destructive hover:text-destructive self-end sm:self-center flex-shrink-0"
                   onClick={() => removeEnvVar(i)}
                 >
                   <X className="h-4 w-4" />

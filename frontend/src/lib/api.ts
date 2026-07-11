@@ -17,10 +17,13 @@ export async function fetchApi<T = unknown>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${BASE_URL}${path}`;
+  const hasBody = options.body !== undefined && options.body !== null;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
+  if (hasBody && !headers["Content-Type"] && !(options.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
 
   const res = await fetch(url, {
     ...options,

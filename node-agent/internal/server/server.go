@@ -60,6 +60,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/servers/{id}/kill", s.handleKillServer)
 	mux.HandleFunc("POST /api/servers/{id}/remove", s.handleRemoveServer)
 	mux.HandleFunc("POST /api/servers/{id}/command", s.handleServerCommand)
+	mux.HandleFunc("POST /api/servers/{id}/install", s.handleInstallServer)
 
 	// Server info routes
 	mux.HandleFunc("GET /api/servers/{id}/status", s.handleServerStatus)
@@ -76,6 +77,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("DELETE /api/servers/{id}/files/{filepath...}", s.handleFileDeleteRoute)
 	mux.HandleFunc("POST /api/servers/{id}/files/rename", s.handleFileRenameRoute)
 	mux.HandleFunc("POST /api/servers/{id}/files/upload", s.handleFileUploadRoute)
+	mux.HandleFunc("POST /api/servers/{id}/files/compress", s.handleFileCompressRoute)
+	mux.HandleFunc("POST /api/servers/{id}/files/decompress", s.handleFileDecompressRoute)
 
 	// Stats
 	mux.HandleFunc("GET /api/servers/{id}/stats", s.handleStatsRoute)
@@ -346,6 +349,35 @@ func (s *Server) handleServerCommand(w http.ResponseWriter, r *http.Request) {
 	output, err := s.containerMgr.Exec(r.Context(), serverID, []string{"/bin/sh", "-c", req.Command})
 	if err != nil {
 		log.Printf("Failed to exec command for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"output":  output,
+	})
+}
+
+func (s *Server) handleInstallServer(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+
+	var req struct {
+		Command string `json:"command"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	if req.Command == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Install command required"})
+		return
+	}
+
+	output, err := s.containerMgr.ExecWithUserRunning(r.Context(), serverID, []string{"/bin/sh", "-c", req.Command}, "0:0")
+	if err != nil {
+		log.Printf("Failed to exec install for %s: %v", serverID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -645,6 +677,16 @@ func (s *Server) handleFileRenameRoute(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFileUploadRoute(w http.ResponseWriter, r *http.Request) {
 	serverID := r.PathValue("id")
 	s.handleFileUpload(w, r, serverID)
+}
+
+func (s *Server) handleFileCompressRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	s.handleFileCompress(w, r, serverID)
+}
+
+func (s *Server) handleFileDecompressRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	s.handleFileDecompress(w, r, serverID)
 }
 
 func (s *Server) handleStatsRoute(w http.ResponseWriter, r *http.Request) {
