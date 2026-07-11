@@ -204,7 +204,7 @@ export default function ServerDetailPage({
     {
       label: "CPU",
       icon: Cpu,
-      used: `${liveCpuUsage.toFixed(1)}%`,
+      used: `${liveCpuUsage.toFixed(2)}%`,
       total: `${liveCpuLimit}%`,
       percent: liveCpuPct,
     },

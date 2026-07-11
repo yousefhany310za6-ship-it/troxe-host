@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -21,9 +22,10 @@ import (
 )
 
 type Manager struct {
-	client    *client.Client
-	containers map[string]*ServerContainer
-	mu        sync.RWMutex
+	client        *client.Client
+	containers    map[string]*ServerContainer
+	mu            sync.RWMutex
+	dataDirectory string
 }
 
 type ServerContainer struct {
@@ -33,7 +35,7 @@ type ServerContainer struct {
 	Image       string
 }
 
-func NewManager(dockerSocket string) (*Manager, error) {
+func NewManager(dockerSocket string, dataDirectory string) (*Manager, error) {
 	cli, err := client.NewClientWithOpts(
 		client.WithHost("unix://"+dockerSocket),
 		client.WithAPIVersionNegotiation(),
@@ -43,8 +45,9 @@ func NewManager(dockerSocket string) (*Manager, error) {
 	}
 
 	m := &Manager{
-		client:     cli,
-		containers: make(map[string]*ServerContainer),
+		client:        cli,
+		containers:    make(map[string]*ServerContainer),
+		dataDirectory: dataDirectory,
 	}
 
 	// Restore existing containers from Docker so we don't lose tracking after a restart
@@ -414,15 +417,19 @@ func (m *Manager) GetStats(ctx context.Context, serverID string) (map[string]int
 		}
 	}
 
-	// Disk (from block io)
-	var diskBytes uint64
-	if statsData.BlkioStats.IoServiceBytesRecursive != nil {
-		for _, bio := range statsData.BlkioStats.IoServiceBytesRecursive {
-			if bio.Op == "Read" {
-				diskBytes += bio.Value
+	// Uptime + disk size from container inspect
+	uptime := int64(0)
+	inspect, err := m.client.ContainerInspect(ctx, sc.ContainerID)
+	if err == nil {
+		if inspect.State != nil && inspect.State.StartedAt != "" {
+			if t, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt); err == nil {
+				uptime = int64(time.Since(t).Seconds())
 			}
 		}
 	}
+
+	// Disk = data directory size
+	diskBytes := getDirSize(m.dataDirectory, serverID)
 
 	return map[string]interface{}{
 		"memory_bytes":       memUsage,
@@ -432,10 +439,49 @@ func (m *Manager) GetStats(ctx context.Context, serverID string) (map[string]int
 			"rx_bytes": rxBytes,
 			"tx_bytes": txBytes,
 		},
-		"uptime":     0,
+		"uptime":     uptime,
 		"state":      sc.Status,
 		"disk_bytes": diskBytes,
 	}, nil
+}
+
+func getDirSize(basePath, serverID string) uint64 {
+	dirPath := basePath + "/" + serverID
+	var size uint64
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return 0
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			size += getDirSizeRecursive(dirPath+"/"+entry.Name())
+		} else {
+			info, err := entry.Info()
+			if err == nil {
+				size += uint64(info.Size())
+			}
+		}
+	}
+	return size
+}
+
+func getDirSizeRecursive(path string) uint64 {
+	var size uint64
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return 0
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			size += getDirSizeRecursive(path+"/"+entry.Name())
+		} else {
+			info, err := entry.Info()
+			if err == nil {
+				size += uint64(info.Size())
+			}
+		}
+	}
+	return size
 }
 
 func (m *Manager) ListAll(ctx context.Context) ([]*ServerContainer, error) {

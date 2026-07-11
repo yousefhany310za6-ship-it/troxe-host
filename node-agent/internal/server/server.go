@@ -38,7 +38,7 @@ type WSClient struct {
 }
 
 func New(cfg *config.Config) (*Server, error) {
-	containerMgr, err := troxcontainer.NewManager(cfg.DockerSocket)
+	containerMgr, err := troxcontainer.NewManager(cfg.DockerSocket, cfg.DataDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container manager: %w", err)
 	}
