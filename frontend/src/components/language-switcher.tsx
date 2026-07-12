@@ -8,11 +8,13 @@ export function LanguageSwitcher() {
 
   return (
     <div className="relative group">
-      <button className="flex items-center gap-2 px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80 text-sm transition-colors">
+      <button className="flex items-center gap-2 px-3 py-2 rounded-xl glass-card text-sm transition-all duration-200 hover:bg-white/[0.06]">
         <span className="text-lg">{availableLocales[locale].flag}</span>
-        <span className="hidden sm:inline">{availableLocales[locale].nativeName}</span>
+        <span className="hidden sm:inline text-foreground">
+          {availableLocales[locale].nativeName}
+        </span>
         <svg
-          className="w-4 h-4 transition-transform group-hover:rotate-180"
+          className="w-4 h-4 text-muted-foreground transition-transform group-hover:rotate-180"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -26,16 +28,16 @@ export function LanguageSwitcher() {
         </svg>
       </button>
 
-      <div className="absolute right-0 top-full mt-1 w-48 bg-card border border-border rounded-xl shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+      <div className="absolute right-0 top-full mt-2 w-48 glass-card rounded-xl shadow-glass opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
         <div className="p-1">
           {(Object.keys(availableLocales) as Locale[]).map((lang) => (
             <button
               key={lang}
               onClick={() => setLocale(lang)}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-200 ${
                 locale === lang
-                  ? "bg-brand-600/20 text-brand-400"
-                  : "hover:bg-secondary text-foreground"
+                  ? "bg-brand-600/15 text-brand-400 border border-brand-500/20"
+                  : "hover:bg-white/[0.04] text-foreground border border-transparent"
               }`}
             >
               <span className="text-lg">{availableLocales[lang].flag}</span>

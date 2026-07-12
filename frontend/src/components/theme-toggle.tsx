@@ -18,7 +18,8 @@ export default function ThemeToggle() {
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
     }
     if (open) {
       document.addEventListener("mousedown", handleClick);
@@ -33,13 +34,13 @@ export default function ThemeToggle() {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="h-9 w-9 inline-flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+        className="h-9 w-9 inline-flex items-center justify-center rounded-xl text-muted-foreground hover:text-foreground hover:bg-white/[0.04] transition-all duration-200"
         aria-label="Toggle theme"
       >
         <Icon className="h-4 w-4" />
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[140px] bg-popover border border-border rounded-lg shadow-lg py-1 animate-in fade-in-0 zoom-in-95">
+        <div className="absolute right-0 top-full mt-2 z-50 min-w-[140px] glass-card rounded-xl shadow-glass py-1 animate-in fade-in-0 zoom-in-95">
           {options.map((opt) => {
             const OptIcon = opt.icon;
             return (
@@ -50,10 +51,10 @@ export default function ThemeToggle() {
                   setOpen(false);
                 }}
                 className={cn(
-                  "w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors",
+                  "w-full flex items-center gap-2 px-3 py-2.5 text-sm text-left transition-all duration-200 rounded-lg mx-1",
                   theme === opt.value
-                    ? "text-brand-400"
-                    : "text-foreground hover:bg-secondary"
+                    ? "text-brand-400 bg-brand-600/10 border border-brand-500/20"
+                    : "text-foreground hover:bg-white/[0.04] border border-transparent"
                 )}
               >
                 <OptIcon className="h-4 w-4" />

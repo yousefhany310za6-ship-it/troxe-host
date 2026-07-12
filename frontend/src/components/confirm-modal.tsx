@@ -18,20 +18,22 @@ interface ConfirmModalProps {
 const variantConfig = {
   danger: {
     icon: Trash2,
-    iconBg: "bg-destructive/10",
-    iconColor: "text-destructive",
-    btnClass: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+    iconBg: "bg-red-500/10",
+    iconColor: "text-red-400",
+    btnClass:
+      "bg-gradient-to-r from-red-600 to-red-500 text-white shadow-glow-danger",
   },
   warning: {
     icon: AlertTriangle,
     iconBg: "bg-yellow-500/10",
-    iconColor: "text-yellow-500",
-    btnClass: "bg-yellow-600 text-white hover:bg-yellow-700",
+    iconColor: "text-yellow-400",
+    btnClass:
+      "bg-gradient-to-r from-yellow-600 to-yellow-500 text-white shadow-glow-warning",
   },
   info: {
     icon: Info,
-    iconBg: "bg-blue-500/10",
-    iconColor: "text-blue-500",
+    iconBg: "bg-brand-500/10",
+    iconColor: "text-brand-400",
     btnClass: "",
   },
 };
@@ -53,16 +55,26 @@ export default function ConfirmModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative bg-card border border-border rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6 space-y-4 animate-in fade-in-0 zoom-in-95 duration-150">
+      <div
+        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+        onClick={onCancel}
+      />
+      <div className="relative glass-card rounded-2xl shadow-glass w-full max-w-sm mx-4 p-6 space-y-4 animate-in fade-in-0 zoom-in-95 duration-150">
         <div className="flex items-start gap-4">
-          <div className={cn("flex-shrink-0 h-10 w-10 rounded-full flex items-center justify-center", cfg.iconBg)}>
+          <div
+            className={cn(
+              "flex-shrink-0 h-10 w-10 rounded-full flex items-center justify-center",
+              cfg.iconBg
+            )}
+          >
             <Icon className={cn("h-5 w-5", cfg.iconColor)} />
           </div>
           <div className="min-w-0">
-            <h3 className="text-lg font-semibold">{title}</h3>
+            <h3 className="text-lg font-semibold text-foreground">{title}</h3>
             {description && (
-              <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {description}
+              </p>
             )}
           </div>
         </div>

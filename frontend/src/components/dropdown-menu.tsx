@@ -35,12 +35,12 @@ export default function DropdownMenu({ items, className }: DropdownMenuProps) {
     <div ref={ref} className={cn("relative", className)}>
       <button
         onClick={() => setOpen(!open)}
-        className="h-8 w-8 p-0 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+        className="h-8 w-8 p-0 inline-flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/[0.04] transition-all duration-200"
       >
         <MoreVertical className="h-4 w-4" />
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[180px] bg-popover border border-border rounded-lg shadow-lg py-1 animate-in fade-in-0 zoom-in-95">
+        <div className="absolute right-0 top-full mt-2 z-50 min-w-[180px] glass-card rounded-xl shadow-glass py-1 animate-in fade-in-0 zoom-in-95">
           {items.map((item, i) => (
             <button
               key={i}
@@ -50,10 +50,10 @@ export default function DropdownMenu({ items, className }: DropdownMenuProps) {
                 setOpen(false);
               }}
               className={cn(
-                "w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors",
+                "w-full flex items-center gap-2 px-3 py-2.5 text-sm text-left transition-all duration-200",
                 item.destructive
-                  ? "text-destructive hover:bg-destructive/10"
-                  : "text-foreground hover:bg-secondary",
+                  ? "text-red-400 hover:bg-red-500/10"
+                  : "text-foreground hover:bg-white/[0.04]",
                 item.disabled && "opacity-50 cursor-not-allowed"
               )}
             >

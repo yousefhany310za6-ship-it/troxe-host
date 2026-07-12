@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS server_stats_history (
-  id            UUID PK DEFAULT gen_random_uuid(),
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   server_id     UUID REFERENCES servers(id) ON DELETE CASCADE,
   memory_used   BIGINT DEFAULT 0,
   cpu_usage     DECIMAL(5,2) DEFAULT 0,
