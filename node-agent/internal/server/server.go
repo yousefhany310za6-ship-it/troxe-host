@@ -1,14 +1,18 @@
 package server
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -18,11 +22,13 @@ import (
 	"github.com/troxe-host/node-agent/internal/auth"
 	"github.com/troxe-host/node-agent/internal/config"
 	troxcontainer "github.com/troxe-host/node-agent/internal/container"
+	troxdocker "github.com/troxe-host/node-agent/internal/docker"
 )
 
 type Server struct {
 	cfg           *config.Config
 	containerMgr  *troxcontainer.Manager
+	imageMgr      *troxdocker.ImageManager
 	httpServer    *http.Server
 	cancel        context.CancelFunc
 	mu            sync.RWMutex
@@ -46,6 +52,7 @@ func New(cfg *config.Config) (*Server, error) {
 	return &Server{
 		cfg:          cfg,
 		containerMgr: containerMgr,
+		imageMgr:     troxdocker.NewImageManager(containerMgr.GetClient()),
 	}, nil
 }
 
@@ -80,6 +87,12 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/servers/{id}/files/compress", s.handleFileCompressRoute)
 	mux.HandleFunc("POST /api/servers/{id}/files/decompress", s.handleFileDecompressRoute)
 
+	// Transfer endpoints
+	mux.HandleFunc("POST /api/servers/{id}/transfer/export", s.handleTransferExport)
+	mux.HandleFunc("POST /api/servers/{id}/transfer/import", s.handleTransferImport)
+	mux.HandleFunc("POST /api/servers/{id}/transfer/complete", s.handleTransferComplete)
+	mux.HandleFunc("POST /api/servers/{id}/transfer/cleanup", s.handleTransferCleanup)
+
 	// Backup management
 	mux.HandleFunc("POST /api/servers/{id}/backup/create", s.handleBackupCreateRoute)
 	mux.HandleFunc("GET /api/servers/{id}/backup/download/{filename}", s.handleBackupDownloadRoute)
@@ -87,6 +100,13 @@ func (s *Server) Start() error {
 
 	// Stats
 	mux.HandleFunc("GET /api/servers/{id}/stats", s.handleStatsRoute)
+
+	// Docker Image management
+	mux.HandleFunc("GET /api/images", s.handleListImages)
+	mux.HandleFunc("POST /api/images/pull", s.handlePullImage)
+	mux.HandleFunc("GET /api/images/pull/{id}", s.handlePullStatus)
+	mux.HandleFunc("DELETE /api/images/{id}", s.handleRemoveImage)
+	mux.HandleFunc("GET /api/images/{id}/history", s.handleImageHistory)
 
 	// Health
 	mux.HandleFunc("GET /api/health", s.handleHealth)
@@ -647,6 +667,197 @@ func (s *Server) handleCrashed(w http.ResponseWriter, r *http.Request) {
 
 var startTime = time.Now()
 
+// --- Transfer Handlers ---
+
+func (s *Server) handleTransferExport(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	dataDir := filepath.Join(s.cfg.DataDirectory, serverID)
+
+	// Stop container first so data is consistent
+	if err := s.containerMgr.Stop(r.Context(), serverID); err != nil {
+		log.Printf("[transfer] stop container %s for export: %v", serverID, err)
+	}
+
+	archivePath := dataDir + ".tar.gz"
+
+	if err := tarGzDirectory(dataDir, archivePath); err != nil {
+		log.Printf("[transfer] failed to archive %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		log.Printf("[transfer] failed to stat archive %s: %v", archivePath, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.tar.gz"`, serverID))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+
+	f, err := os.Open(archivePath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer f.Close()
+	io.Copy(w, f)
+}
+
+func (s *Server) handleTransferImport(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	dataDir := filepath.Join(s.cfg.DataDirectory, serverID)
+
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		log.Printf("[transfer] failed to create data dir %s: %v", dataDir, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if err := untarGz(r.Body, dataDir); err != nil {
+		log.Printf("[transfer] failed to extract archive for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func (s *Server) handleTransferComplete(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	dataDir := filepath.Join(s.cfg.DataDirectory, serverID)
+
+	if err := chownRecursive(dataDir, 1000, 1000); err != nil {
+		log.Printf("[transfer] chown failed for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if err := s.containerMgr.Start(r.Context(), serverID); err != nil {
+		log.Printf("[transfer] start container %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func (s *Server) handleTransferCleanup(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	archivePath := filepath.Join(s.cfg.DataDirectory, serverID+".tar.gz")
+
+	if err := os.Remove(archivePath); err != nil && !os.IsNotExist(err) {
+		log.Printf("[transfer] cleanup failed for %s: %v", serverID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func tarGzDirectory(sourceDir, targetFile string) error {
+	f, err := os.Create(targetFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gzWriter := gzip.NewWriter(f)
+	defer gzWriter.Close()
+
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return err
+		}
+		if relPath == "." {
+			return nil
+		}
+
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(relPath)
+
+		if err := tarWriter.WriteHeader(header); err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(tarWriter, f)
+			return err
+		}
+		return nil
+	})
+}
+
+func untarGz(src io.Reader, destDir string) error {
+	gzReader, err := gzip.NewReader(src)
+	if err != nil {
+		return err
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		target := filepath.Join(destDir, header.Name)
+		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(filepath.Separator)) {
+			return fmt.Errorf("illegal file path: %s", header.Name)
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(f, tarReader); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+		}
+	}
+	return nil
+}
+
+func chownRecursive(path string, uid, gid int) error {
+	return filepath.Walk(path, func(name string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chown(name, uid, gid)
+	})
+}
+
 // --- Helpers ---
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
@@ -733,4 +944,70 @@ func wsIsOpen(client *WSClient) bool {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	return !client.closed
+}
+
+// --- Docker Image Handlers ---
+
+func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
+	images, err := s.imageMgr.ListImages(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"images": images,
+	})
+}
+
+func (s *Server) handlePullImage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Image string `json:"image"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+		return
+	}
+	if req.Image == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Image name required"})
+		return
+	}
+
+	task := s.imageMgr.PullImage(r.Context(), req.Image)
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"task_id": task.ID,
+		"status":  task.Status,
+	})
+}
+
+func (s *Server) handlePullStatus(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	task := s.imageMgr.GetPullStatus(taskID)
+	if task == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Pull task not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (s *Server) handleRemoveImage(w http.ResponseWriter, r *http.Request) {
+	imageID := r.PathValue("id")
+	force := r.URL.Query().Get("force") == "true"
+
+	if err := s.imageMgr.RemoveImage(r.Context(), imageID, force); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func (s *Server) handleImageHistory(w http.ResponseWriter, r *http.Request) {
+	imageID := r.PathValue("id")
+	history, err := s.imageMgr.GetImageHistory(r.Context(), imageID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"history": history,
+	})
 }

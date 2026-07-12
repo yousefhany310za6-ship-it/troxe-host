@@ -23,6 +23,8 @@ import monitoringAdminRoutes from "./api/routes/monitoring-admin.js";
 import themeRoutes from "./api/routes/themes.js";
 import databaseHostRoutes from "./api/routes/database-hosts.js";
 import databaseRoutes from "./api/routes/databases.js";
+import notificationRoutes from "./api/routes/notifications.js";
+import nodeImageRoutes from "./api/routes/node-images.js";
 import { startScheduler } from "./services/scheduler.js";
 import { startStatsCollector } from "./services/stats-collector.js";
 import { securityHeaders } from "./api/middleware/security.js";
@@ -126,6 +128,8 @@ await app.register(monitoringAdminRoutes, { prefix: "/api/v1" });
 await app.register(themeRoutes, { prefix: "/api/v1" });
 await app.register(databaseHostRoutes, { prefix: "/api/v1" });
 await app.register(databaseRoutes, { prefix: "/api/v1" });
+await app.register(notificationRoutes, { prefix: "/api/v1" });
+await app.register(nodeImageRoutes, { prefix: "/api/v1" });
 
 // 404 handler
 app.setNotFoundHandler((request, reply) => {

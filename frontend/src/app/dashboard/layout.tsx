@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth";
+import ThemeToggle from "@/components/theme-toggle";
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -111,6 +112,10 @@ function SidebarContent({
             </p>
           </div>
         </div>
+        <div className="flex items-center justify-between px-3 py-2">
+          <span className="text-xs text-muted-foreground">Theme</span>
+          <ThemeToggle />
+        </div>
         <button
           onClick={handleLogout}
           className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
@@ -194,6 +199,9 @@ export default function DashboardLayout({
             <Menu className="h-6 w-6" />
           </button>
           <span className="font-bold text-brand-400">Troxe Host</span>
+          <div className="ml-auto">
+            <ThemeToggle />
+          </div>
         </div>
 
         <div className="p-4 md:p-8">{children}</div>

@@ -727,6 +727,11 @@ func (m *Manager) ListAll(ctx context.Context) ([]*ServerContainer, error) {
 // GetAllocatedStats returns the total memory (MB) and disk (MB) allocated to
 // all Troxe-managed containers. Disk usage is reported as 0 when it cannot be
 // determined cheaply; the panel tolerates a zero value.
+// GetClient returns the underlying Docker client for use by other managers.
+func (m *Manager) GetClient() *client.Client {
+	return m.client
+}
+
 func (m *Manager) GetAllocatedStats(ctx context.Context) (memoryMb int64, diskMb int64) {
 	containers, err := m.ListAll(ctx)
 	if err != nil {

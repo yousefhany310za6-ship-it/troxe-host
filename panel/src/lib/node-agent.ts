@@ -169,6 +169,84 @@ export async function sendServerCommand(
   );
 }
 
+export async function agentStreamBody(
+  node: NodeInfo,
+  method: string,
+  path: string,
+): Promise<{ ok: boolean; status: number; body: ReadableStream | null; error?: string }> {
+  const url = `${agentBaseUrl(node)}${path}`;
+  const token = signAgentJWT("system");
+
+  try {
+    const resp = await fetch(url, {
+      method,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "unknown error");
+      return { ok: false, status: resp.status, body: null, error: text };
+    }
+
+    return { ok: true, status: resp.status, body: resp.body };
+  } catch (err: any) {
+    return {
+      ok: false,
+      status: 0,
+      body: null,
+      error: `Agent connection failed: ${err.message}`,
+    };
+  }
+}
+
+export async function agentSendBody(
+  node: NodeInfo,
+  method: string,
+  path: string,
+  bodyStream: ReadableStream,
+): Promise<AgentResponse> {
+  const url = `${agentBaseUrl(node)}${path}`;
+  const token = signAgentJWT("system");
+
+  try {
+    const resp = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/gzip",
+      },
+      body: bodyStream as any,
+      duplex: "half",
+    } as any);
+
+    const text = await resp.text();
+    let data: any = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
+
+    if (!resp.ok) {
+      return {
+        ok: false,
+        status: resp.status,
+        data: null,
+        error: typeof data === "object" && data?.error ? data.error : text,
+      };
+    }
+
+    return { ok: true, status: resp.status, data };
+  } catch (err: any) {
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      error: `Agent connection failed: ${err.message}`,
+    };
+  }
+}
+
 export async function getNodeForServer(
   serverId: string,
   db: any

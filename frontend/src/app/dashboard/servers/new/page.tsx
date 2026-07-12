@@ -12,6 +12,7 @@ import { Plus, Trash2, ArrowLeft } from "lucide-react";
 interface Egg {
   id: string;
   name: string;
+  docker_image: string;
   startup_command: string;
   default_memory_mb: number;
   default_disk_mb: number;
@@ -35,6 +36,7 @@ export default function NewServerPage() {
   const [diskMb, setDiskMb] = useState("5120");
   const [startupCommand, setStartupCommand] = useState("");
   const [cpuPercent, setCpuPercent] = useState("100");
+  const [dockerImage, setDockerImage] = useState("");
   const [envVars, setEnvVars] = useState<Array<{ key: string; value: string }>>(
     []
   );
@@ -69,6 +71,7 @@ export default function NewServerPage() {
       setMemoryMb(String(selectedEgg.default_memory_mb));
       setDiskMb(String(selectedEgg.default_disk_mb));
       setCpuPercent(String(selectedEgg.default_cpu_percent));
+      setDockerImage(selectedEgg.docker_image);
     }
   }, [selectedEgg]);
 
@@ -114,6 +117,7 @@ export default function NewServerPage() {
             memoryMb: Number(memoryMb),
             diskMb: Number(diskMb),
             cpuPercent: Number(cpuPercent),
+            dockerImage: dockerImage || undefined,
             startupCommand: startupCommand || undefined,
             environment:
               Object.keys(envObject).length > 0 ? envObject : undefined,
@@ -260,6 +264,22 @@ export default function NewServerPage() {
                 className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
                 placeholder="Pre-filled from egg"
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1.5">
+                Docker Image
+              </label>
+              <input
+                type="text"
+                value={dockerImage}
+                onChange={(e) => setDockerImage(e.target.value)}
+                className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="e.g. nginx:latest"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Pre-filled from the selected egg. Change only if needed.
+              </p>
             </div>
 
             <div>

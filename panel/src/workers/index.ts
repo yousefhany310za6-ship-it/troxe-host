@@ -3,6 +3,7 @@ import { redis } from "../config/redis.js";
 import { db } from "../config/database.js";
 import { eventBus } from "../events/index.js";
 import { config } from "../config/env.js";
+import { sendServerInstalled, sendServerCrashed, sendServerRemoved, NOTIFICATIONS_ENABLED } from "../services/email.js";
 import {
   agentPost,
   agentGet,
@@ -10,6 +11,34 @@ import {
   getNodeForServer,
   sendServerCommand,
 } from "../lib/node-agent.js";
+
+async function shouldNotify(userId: string, preferenceKey: string): Promise<boolean> {
+  if (!NOTIFICATIONS_ENABLED) return false;
+  try {
+    const result = await db.query(
+      `SELECT ${preferenceKey} FROM notification_preferences WHERE user_id = $1`,
+      [userId]
+    );
+    if (result.rows.length === 0) return true;
+    return result.rows[0][preferenceKey] !== false;
+  } catch {
+    return true;
+  }
+}
+
+async function getServerOwner(serverId: string): Promise<{ email: string; username: string } | null> {
+  try {
+    const result = await db.query(
+      `SELECT u.email, u.username FROM users u
+       JOIN servers s ON s.owner_id = u.id
+       WHERE s.id = $1`,
+      [serverId]
+    );
+    return result.rows.length > 0 ? result.rows[0] : null;
+  } catch {
+    return null;
+  }
+}
 
 const connection = {
   host: config.REDIS_URL.includes("://")
@@ -157,6 +186,16 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
       [serverId]
     );
 
+    // Send install notification
+    try {
+      const owner = await getServerOwner(serverId);
+      if (owner && await shouldNotify(owner.email, "email_on_install")) {
+        await sendServerInstalled(owner, server.name);
+      }
+    } catch (err) {
+      console.warn(`[Job] Failed to send install notification: ${err}`);
+    }
+
     await eventBus.emit("server.created", {
       subjectType: "server",
       subjectId: serverId,
@@ -276,6 +315,16 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
       `UPDATE servers SET status = 'running', installed_at = now() WHERE id = $1`,
       [serverId]
     );
+
+    // Send install notification
+    try {
+      const owner = await getServerOwner(serverId);
+      if (owner && await shouldNotify(owner.email, "email_on_install")) {
+        await sendServerInstalled(owner, srv.name);
+      }
+    } catch (err) {
+      console.warn(`[Job] Failed to send install notification: ${err}`);
+    }
 
     await eventBus.emit("server.installed", {
       subjectType: "server",
@@ -493,12 +542,33 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
     const { serverId } = job.data;
     console.log(`[Job] Deleting server: ${serverId}`);
 
+    // Get server info before deletion
+    const serverInfo = await db.query(
+      `SELECT s.name, s.owner_id, u.email, u.username
+       FROM servers s JOIN users u ON s.owner_id = u.id
+       WHERE s.id = $1`,
+      [serverId]
+    );
+
     const node = await getNodeForServer(serverId, db);
     if (node) {
       await agentPost(node, `/api/servers/${serverId}/remove`);
     }
 
     await db.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
+
+    // Send removal notification
+    try {
+      if (serverInfo.rows.length > 0) {
+        const srv = serverInfo.rows[0];
+        const owner = { email: srv.email, username: srv.username };
+        if (await shouldNotify(srv.owner_id, "email_on_remove")) {
+          await sendServerRemoved(owner, srv.name);
+        }
+      }
+    } catch (err) {
+      console.warn(`[Job] Failed to send removal notification: ${err}`);
+    }
   },
 
   "server.command": async (job) => {

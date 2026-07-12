@@ -19,11 +19,15 @@ import {
   AlertTriangle,
   Clock,
 } from "lucide-react";
+import { Bell } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ConfirmModal from "@/components/confirm-modal";
+import { useThemeStore } from "@/stores/theme";
+import { Sun, Moon, Monitor } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface MeResponse {
   user: {
@@ -44,7 +48,70 @@ interface ApiKey {
   created_at: string;
 }
 
+interface NotificationPreferences {
+  emailOnInstall: boolean;
+  emailOnCrash: boolean;
+  emailOnRemove: boolean;
+  emailOnApiKey: boolean;
+}
+
 type Phase = "idle" | "enabling" | "recovery";
+
+function ThemeSection() {
+  const { theme, setTheme } = useThemeStore();
+
+  const options = [
+    { value: "dark" as const, label: "Dark", description: "Dark mode for reduced eye strain", icon: Moon },
+    { value: "light" as const, label: "Light", description: "Light mode for bright environments", icon: Sun },
+    { value: "system" as const, label: "System", description: "Follow your system preference", icon: Monitor },
+  ];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Sun className="h-5 w-5" />
+          Theme
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {options.map((opt) => {
+            const Icon = opt.icon;
+            const selected = theme === opt.value;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => setTheme(opt.value)}
+                className={cn(
+                  "flex flex-col items-start gap-2 rounded-xl border p-4 text-left transition-all",
+                  selected
+                    ? "border-brand-500 bg-brand-500/10 ring-1 ring-brand-500"
+                    : "border-border hover:border-muted-foreground/30"
+                )}
+              >
+                <div
+                  className={cn(
+                    "flex h-9 w-9 items-center justify-center rounded-lg",
+                    selected ? "text-brand-400" : "text-muted-foreground"
+                  )}
+                >
+                  <Icon className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium">{opt.label}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {opt.description}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function SettingsPage() {
   const { data: me, mutate, isLoading } = useSWR<MeResponse>(
@@ -90,6 +157,26 @@ export default function SettingsPage() {
   const [newKeyCreating, setNewKeyCreating] = useState(false);
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
+
+  // Notification Preferences state
+  const { data: notifData, mutate: mutateNotif } = useSWR<{ preferences: NotificationPreferences }>(
+    `/api/v1/notifications/preferences`,
+    (url: string) => fetchApi<{ preferences: NotificationPreferences }>(url)
+  );
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences>({
+    emailOnInstall: true,
+    emailOnCrash: true,
+    emailOnRemove: true,
+    emailOnApiKey: true,
+  });
+  const [notifSaving, setNotifSaving] = useState(false);
+  const [notifSaved, setNotifSaved] = useState(false);
+
+  useEffect(() => {
+    if (notifData?.preferences) {
+      setNotifPrefs(notifData.preferences);
+    }
+  }, [notifData]);
 
   // Populate profile fields when data loads
   useEffect(() => {
@@ -253,6 +340,24 @@ export default function SettingsPage() {
       setRevokeTarget(null);
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  async function saveNotificationPreferences() {
+    setNotifSaving(true);
+    setNotifSaved(false);
+    try {
+      await fetchApi(`/api/v1/notifications/preferences`, {
+        method: "PUT",
+        body: JSON.stringify(notifPrefs),
+      });
+      setNotifSaved(true);
+      mutateNotif();
+      setTimeout(() => setNotifSaved(false), 2000);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setNotifSaving(false);
     }
   }
 
@@ -662,6 +767,70 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Notification Preferences */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Bell className="h-5 w-5" />
+            Notification Preferences
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Choose which email notifications you&apos;d like to receive.
+          </p>
+          {[
+            { key: "emailOnInstall" as const, label: "Server installed", desc: "When a server finishes installing" },
+            { key: "emailOnCrash" as const, label: "Server crashed", desc: "When a server crashes unexpectedly" },
+            { key: "emailOnRemove" as const, label: "Server removed", desc: "When a server is deleted" },
+            { key: "emailOnApiKey" as const, label: "API key created", desc: "When a new API key is created" },
+          ].map((item) => (
+            <div
+              key={item.key}
+              className="flex items-center justify-between p-3 rounded-lg border border-border"
+            >
+              <div>
+                <p className="text-sm font-medium">{item.label}</p>
+                <p className="text-xs text-muted-foreground">{item.desc}</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={notifPrefs[item.key]}
+                onClick={() =>
+                  setNotifPrefs((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
+                }
+                className={cn(
+                  "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 focus:ring-offset-background",
+                  notifPrefs[item.key] ? "bg-brand-500" : "bg-muted"
+                )}
+              >
+                <span
+                  className={cn(
+                    "pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out",
+                    notifPrefs[item.key] ? "translate-x-5" : "translate-x-0"
+                  )}
+                />
+              </button>
+            </div>
+          ))}
+          {notifSaved && (
+            <p className="text-sm text-emerald-400 bg-emerald-500/10 p-3 rounded-lg flex items-center gap-2">
+              <Check className="h-4 w-4" />
+              Preferences saved
+            </p>
+          )}
+          <Button onClick={saveNotificationPreferences} disabled={notifSaving}>
+            {notifSaving ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Check className="h-4 w-4 mr-2" />
+            )}
+            {notifSaving ? "Saving..." : "Save Preferences"}
+          </Button>
+        </CardContent>
+      </Card>
+
       {/* Create API Key Modal */}
       {showKeyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -761,6 +930,9 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+
+      {/* Theme Section */}
+      <ThemeSection />
 
       {/* Revoke Confirmation Modal */}
       <ConfirmModal

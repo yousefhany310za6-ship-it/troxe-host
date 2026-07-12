@@ -7,6 +7,13 @@ import {
 } from "../middleware/rbac.js";
 import { addJob } from "../../workers/index.js";
 import { eventBus } from "../../events/index.js";
+import {
+  agentGet,
+  agentPost,
+  agentStreamBody,
+  agentSendBody,
+  getNodeForServer,
+} from "../../lib/node-agent.js";
 
 // Map a raw DB server row to the camelCase shape the frontend expects.
 function mapServer(row: Record<string, any>) {
@@ -40,6 +47,7 @@ const createServerSchema = z.object({
   memoryMb: z.number().int().min(128).max(1048576).optional(),
   diskMb: z.number().int().min(512).max(10485760).optional(),
   cpuPercent: z.number().min(1).max(1000).optional(),
+  dockerImage: z.string().optional(),
   startupCommand: z.string().optional(),
   environment: z.record(z.string()).optional(),
 });
@@ -239,6 +247,7 @@ export default async function serverRoutes(app: FastifyInstance) {
       const memoryMb = body.memoryMb || egg.default_memory_mb;
       const diskMb = body.diskMb || egg.default_disk_mb;
       const cpuPercent = body.cpuPercent || egg.default_cpu_percent;
+      const dockerImage = body.dockerImage || egg.docker_image;
       const startupCommand = body.startupCommand || egg.startup_command;
 
       // Create server record
@@ -259,7 +268,7 @@ export default async function serverRoutes(app: FastifyInstance) {
           diskMb,
           cpuPercent,
           egg.default_pid_limit,
-          egg.docker_image,
+          dockerImage,
           startupCommand,
           JSON.stringify(body.environment || {}),
         ]
@@ -460,4 +469,224 @@ export default async function serverRoutes(app: FastifyInstance) {
       });
     }
   );
+
+  // --- Server Transfer Routes ---
+
+  // Initiate server transfer
+  app.post(
+    "/servers/:id/transfer",
+    { preHandler: [authenticateSession, requireServerAccess] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const { newNodeId, newAllocationId } = request.body as {
+        newNodeId: string;
+        newAllocationId: string;
+      };
+
+      if (!newNodeId || !newAllocationId) {
+        return reply.status(400).send({ error: "newNodeId and newAllocationId required" });
+      }
+
+      // Get server info
+      const serverResult = await app.db.query(
+        `SELECT s.*, n.fqdn, n.daemon_listen_port
+         FROM servers s JOIN nodes n ON s.node_id = n.id
+         WHERE s.id = $1`,
+        [id]
+      );
+      if (serverResult.rows.length === 0) {
+        return reply.status(404).send({ error: "Server not found" });
+      }
+      const server = serverResult.rows[0];
+
+      if (server.node_id === newNodeId) {
+        return reply.status(400).send({ error: "Server is already on the target node" });
+      }
+
+      // Validate target node exists
+      const nodeResult = await app.db.query("SELECT id, fqdn, daemon_listen_port FROM nodes WHERE id = $1", [newNodeId]);
+      if (nodeResult.rows.length === 0) {
+        return reply.status(404).send({ error: "Target node not found" });
+      }
+      const targetNode = nodeResult.rows[0];
+
+      // Validate allocation is available on target node
+      const allocResult = await app.db.query(
+        "SELECT id FROM allocations WHERE id = $1 AND node_id = $2 AND server_id IS NULL",
+        [newAllocationId, newNodeId]
+      );
+      if (allocResult.rows.length === 0) {
+        return reply.status(400).send({ error: "Allocation not available on target node" });
+      }
+
+      // Create transfer record
+      const transferResult = await app.db.query(
+        `INSERT INTO server_transfers (server_id, old_node_id, new_node_id, old_allocation_id, new_allocation_id, status)
+         VALUES ($1, $2, $3, $4, $5, 'pending') RETURNING *`,
+        [id, server.node_id, newNodeId, server.allocation_id, newAllocationId]
+      );
+      const transfer = transferResult.rows[0];
+
+      // Start transfer in the background (don't await)
+      runTransfer(id, server, targetNode, transfer, app.db, newNodeId, newAllocationId);
+
+      return reply.status(201).send({ transferId: transfer.id, status: transfer.status });
+    }
+  );
+
+  // Get transfer status
+  app.get(
+    "/servers/:id/transfer",
+    { preHandler: [authenticateSession, requireServerAccess] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      const result = await app.db.query(
+        `SELECT st.*,
+                oldn.name as old_node_name,
+                newn.name as new_node_name
+         FROM server_transfers st
+         LEFT JOIN nodes oldn ON st.old_node_id = oldn.id
+         LEFT JOIN nodes newn ON st.new_node_id = newn.id
+         WHERE st.server_id = $1
+         ORDER BY st.created_at DESC
+         LIMIT 1`,
+        [id]
+      );
+
+      if (result.rows.length === 0) {
+        return reply.status(404).send({ error: "No transfers found" });
+      }
+
+      return reply.send({ transfer: result.rows[0] });
+    }
+  );
+
+  // List transfer history
+  app.get(
+    "/servers/:id/transfers",
+    { preHandler: [authenticateSession, requireServerAccess] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      const result = await app.db.query(
+        `SELECT st.*,
+                oldn.name as old_node_name,
+                newn.name as new_node_name
+         FROM server_transfers st
+         LEFT JOIN nodes oldn ON st.old_node_id = oldn.id
+         LEFT JOIN nodes newn ON st.new_node_id = newn.id
+         WHERE st.server_id = $1
+         ORDER BY st.created_at DESC`,
+        [id]
+      );
+
+      return reply.send({ transfers: result.rows });
+    }
+  );
+}
+
+async function runTransfer(
+  serverId: string,
+  server: any,
+  targetNode: any,
+  transfer: any,
+  db: any,
+  newNodeId: string,
+  newAllocationId: string,
+) {
+  try {
+    await db.query(
+      "UPDATE server_transfers SET status = 'transferring', updated_at = now() WHERE id = $1",
+      [transfer.id]
+    );
+
+    // Get source node info
+    const sourceNode = { fqdn: server.fqdn, daemon_listen_port: server.daemon_listen_port };
+    const destNode = { fqdn: targetNode.fqdn, daemon_listen_port: targetNode.daemon_listen_port };
+
+    // Step 1: Stop the server first
+    await agentPost(sourceNode, `/api/servers/${serverId}/stop`);
+
+    // Step 2: Export data from source agent (stream)
+    const exportResp = await agentStreamBody(sourceNode, "POST", `/api/servers/${serverId}/transfer/export`);
+    if (!exportResp.ok || !exportResp.body) {
+      throw new Error(`Export failed: ${exportResp.error}`);
+    }
+
+    // Step 3: Import data to destination agent (stream the tar.gz)
+    const importResp = await agentSendBody(destNode, "POST", `/api/servers/${serverId}/transfer/import`, exportResp.body);
+    if (!importResp.ok) {
+      throw new Error(`Import failed: ${importResp.error}`);
+    }
+
+    // Step 4: Complete transfer on destination (chown + start)
+    const completeResp = await agentPost(destNode, `/api/servers/${serverId}/transfer/complete`);
+    if (!completeResp.ok) {
+      throw new Error(`Finalize failed: ${completeResp.error}`);
+    }
+
+    // Step 5: Update DB - reassign allocations
+    await db.query(
+      "UPDATE allocations SET server_id = NULL, allocated_at = NULL WHERE id = $1",
+      [server.allocation_id]
+    );
+    await db.query(
+      "UPDATE allocations SET server_id = $1, allocated_at = now() WHERE id = $2",
+      [serverId, newAllocationId]
+    );
+
+    // Step 6: Update server's node_id and allocation_id
+    await db.query(
+      "UPDATE servers SET node_id = $1, allocation_id = $2, updated_at = now() WHERE id = $3",
+      [newNodeId, newAllocationId, serverId]
+    );
+
+    // Step 7: Update node resource counts
+    await db.query(
+      `UPDATE nodes SET
+        allocated_memory_mb = allocated_memory_mb - $1,
+        allocated_disk_mb = allocated_disk_mb - $2
+       WHERE id = $3`,
+      [server.memory_mb, server.disk_mb, server.node_id]
+    );
+    await db.query(
+      `UPDATE nodes SET
+        allocated_memory_mb = allocated_memory_mb + $1,
+        allocated_disk_mb = allocated_disk_mb + $2
+       WHERE id = $3`,
+      [server.memory_mb, server.disk_mb, newNodeId]
+    );
+
+    // Step 8: Cleanup source archive
+    await agentPost(sourceNode, `/api/servers/${serverId}/transfer/cleanup`);
+
+    // Step 9: Mark transfer complete
+    await db.query(
+      "UPDATE server_transfers SET status = 'completed', updated_at = now() WHERE id = $1",
+      [transfer.id]
+    );
+
+    await eventBus.emit("server.transferred", {
+      subjectType: "server",
+      subjectId: serverId,
+      metadata: { oldNodeId: server.node_id, newNodeId },
+    });
+  } catch (err: any) {
+    console.error(`[Transfer] Server ${serverId} transfer failed:`, err.message);
+
+    await db.query(
+      "UPDATE server_transfers SET status = 'failed', error = $1, updated_at = now() WHERE id = $2",
+      [err.message, transfer.id]
+    );
+
+    // Try to rollback: restart server on source node
+    try {
+      const sourceNode = { fqdn: server.fqdn, daemon_listen_port: server.daemon_listen_port };
+      await agentPost(sourceNode, `/api/servers/${serverId}/start`);
+      await agentPost(sourceNode, `/api/servers/${serverId}/transfer/cleanup`);
+    } catch {
+      // Rollback best-effort
+    }
+  }
 }

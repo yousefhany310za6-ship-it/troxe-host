@@ -6,6 +6,7 @@ import {
 } from "../middleware/rbac.js";
 import { generateDaemonToken, hashDaemonToken } from "../middleware/auth.js";
 import { eventBus } from "../../events/index.js";
+import { sendServerCrashed, NOTIFICATIONS_ENABLED } from "../../services/email.js";
 
 const createNodeSchema = z.object({
   name: z.string().min(1).max(100),
@@ -213,6 +214,29 @@ export default async function nodeRoutes(app: FastifyInstance) {
     }
   );
 
+  // Get free allocations for a node
+  app.get(
+    "/nodes/:id/allocations",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const query = request.query as { assigned?: string };
+
+      let sql: string;
+      let params: string[];
+      if (query.assigned === "false") {
+        sql = "SELECT * FROM allocations WHERE node_id = $1 AND server_id IS NULL ORDER BY ip, port";
+        params = [id];
+      } else {
+        sql = "SELECT * FROM allocations WHERE node_id = $1 ORDER BY ip, port";
+        params = [id];
+      }
+
+      const result = await app.db.query(sql, params);
+      return reply.send({ allocations: result.rows });
+    }
+  );
+
   // Delete allocation
   app.delete(
     "/allocations/:id",
@@ -296,6 +320,34 @@ export default async function nodeRoutes(app: FastifyInstance) {
             subjectId: serverId,
             nodeId,
           });
+
+          // Send crash email notification
+          try {
+            if (NOTIFICATIONS_ENABLED) {
+              const ownerResult = await app.db.query(
+                `SELECT u.id as owner_id, u.email, u.username, s.name
+                 FROM servers s JOIN users u ON s.owner_id = u.id
+                 WHERE s.id = $1`,
+                [serverId]
+              );
+              if (ownerResult.rows.length > 0) {
+                const owner = ownerResult.rows[0];
+                const notifResult = await app.db.query(
+                  `SELECT email_on_crash FROM notification_preferences WHERE user_id = $1`,
+                  [owner.owner_id]
+                );
+                const shouldSend = notifResult.rows.length === 0 || notifResult.rows[0].email_on_crash !== false;
+                if (shouldSend) {
+                  await sendServerCrashed(
+                    { email: owner.email, username: owner.username },
+                    owner.name
+                  );
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`[Heartbeat] Failed to send crash notification:`, err);
+          }
         }
       }
 

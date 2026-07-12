@@ -5,6 +5,7 @@ import { hashPassword, verifyPassword, generateApiKey, hashApiKey } from "../mid
 import { authenticator } from "otplib";
 import QRCode from "qrcode";
 import { setSecurityCookies, clearSecurityCookies } from "../middleware/security.js";
+import { sendApiKeyCreated, NOTIFICATIONS_ENABLED } from "../../services/email.js";
 
 const registerSchema = z.object({
   username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9_-]+$/),
@@ -403,6 +404,25 @@ export default async function authRoutes(app: FastifyInstance) {
        RETURNING id, name, key_prefix, permissions, expires_at, created_at`,
       [request.user!.userId, name.trim(), keyPrefix, keyHash, "{}", expiresAt]
     );
+
+    // Send API key created notification
+    try {
+      if (NOTIFICATIONS_ENABLED) {
+        const notifResult = await app.db.query(
+          `SELECT email_on_api_key FROM notification_preferences WHERE user_id = $1`,
+          [request.user!.userId]
+        );
+        const shouldSend = notifResult.rows.length === 0 || notifResult.rows[0].email_on_api_key !== false;
+        if (shouldSend) {
+          await sendApiKeyCreated(
+            { email: request.user!.email, username: request.user!.username },
+            name.trim()
+          );
+        }
+      }
+    } catch (err) {
+      console.error(`[Auth] Failed to send API key notification:`, err);
+    }
 
     return reply.status(201).send({
       ...result.rows[0],

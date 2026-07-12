@@ -19,6 +19,23 @@ export default function RootLayout({
     <html lang="en" className="dark" suppressHydrationWarning>
       <head>
         <link rel="icon" href="/favicons/favicon.ico" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var theme = JSON.parse(localStorage.getItem('troxe-theme') || '{"state":{"theme":"dark"}}').state.theme;
+                  var resolved = theme === 'system'
+                    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+                    : theme;
+                  document.documentElement.classList.add(resolved);
+                } catch(e) {
+                  document.documentElement.classList.add('dark');
+                }
+              })();
+            `,
+          }}
+        />
       </head>
       <body className={inter.className}>
         <I18nProvider>{children}</I18nProvider>

@@ -15,6 +15,7 @@ import {
   Wrench,
   Globe,
   ArrowLeft,
+  Download,
 } from "lucide-react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -212,6 +213,12 @@ export default function NodeDetailPage({
             />
             {node.maintenance_mode ? "Disable Maintenance" : "Enable Maintenance"}
           </Button>
+          <Link href={`/dashboard/nodes/${id}/images`}>
+            <Button size="sm" variant="outline">
+              <Download className="h-4 w-4 mr-1.5" />
+              Docker Images
+            </Button>
+          </Link>
         </div>
       </div>
 
