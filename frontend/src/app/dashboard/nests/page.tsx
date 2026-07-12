@@ -3,59 +3,47 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { fetchApi } from "@/lib/api";
-import { MapPin, Plus, Pencil, Trash2, X, Network } from "lucide-react";
+import { FolderTree, Plus, Pencil, Trash2, X, Egg } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
-interface Location {
+interface Nest {
   id: string;
   name: string;
   description: string | null;
+  egg_count: number;
   created_at: string;
 }
 
-interface Node {
-  id: string;
-  location_id: string;
-}
-
-export default function LocationsPage() {
+export default function NestsPage() {
   const [showForm, setShowForm] = useState(false);
-  const [editLocation, setEditLocation] = useState<Location | null>(null);
+  const [editNest, setEditNest] = useState<Nest | null>(null);
   const [form, setForm] = useState({ name: "", description: "" });
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
 
   const {
     data,
-    error,
+    error: fetchError,
     isLoading,
     mutate,
-  } = useSWR<{ locations: Location[] }>("/api/v1/locations", (url) =>
-    fetchApi<{ locations: Location[] }>(url)
+  } = useSWR<{ nests: Nest[] }>("/api/v1/nests", (url) =>
+    fetchApi<{ nests: Nest[] }>(url)
   );
 
-  const { data: nodeData } = useSWR<{ nodes: Node[] }>(
-    "/api/v1/nodes",
-    (url) => fetchApi<{ nodes: Node[] }>(url)
-  );
-
-  const locations = data?.locations ?? [];
-  const nodes = nodeData?.nodes ?? [];
-
-  const getNodeCount = (locationId: string) =>
-    nodes.filter((n) => n.location_id === locationId).length;
+  const nests = data?.nests ?? [];
 
   const openCreate = () => {
-    setEditLocation(null);
+    setEditNest(null);
     setForm({ name: "", description: "" });
     setFormError("");
     setShowForm(true);
   };
 
-  const openEdit = (loc: Location) => {
-    setEditLocation(loc);
-    setForm({ name: loc.name, description: loc.description || "" });
+  const openEdit = (nest: Nest) => {
+    setEditNest(nest);
+    setForm({ name: nest.name, description: nest.description || "" });
     setFormError("");
     setShowForm(true);
   };
@@ -65,8 +53,8 @@ export default function LocationsPage() {
     setSubmitting(true);
     setFormError("");
     try {
-      if (editLocation) {
-        await fetchApi(`/api/v1/locations/${editLocation.id}`, {
+      if (editNest) {
+        await fetchApi(`/api/v1/nests/${editNest.id}`, {
           method: "PUT",
           body: JSON.stringify({
             name: form.name,
@@ -74,7 +62,7 @@ export default function LocationsPage() {
           }),
         });
       } else {
-        await fetchApi("/api/v1/locations", {
+        await fetchApi("/api/v1/nests", {
           method: "POST",
           body: JSON.stringify({
             name: form.name,
@@ -83,24 +71,23 @@ export default function LocationsPage() {
         });
       }
       setShowForm(false);
-      setEditLocation(null);
+      setEditNest(null);
       setForm({ name: "", description: "" });
       mutate();
     } catch (err: any) {
-      setFormError(err.message || "Failed to save location");
+      setFormError(err.message || "Failed to save nest");
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleDelete = async (id: string, name: string) => {
-    const count = getNodeCount(id);
-    if (!confirm(`Delete location "${name}"?${count > 0 ? ` It has ${count} node${count !== 1 ? "s" : ""} and cannot be deleted.` : " This cannot be undone."}`)) return;
+    if (!confirm(`Delete nest "${name}"? This cannot be undone.`)) return;
     try {
-      await fetchApi(`/api/v1/locations/${id}`, { method: "DELETE" });
+      await fetchApi(`/api/v1/nests/${id}`, { method: "DELETE" });
       mutate();
     } catch (err: any) {
-      alert(err.message || "Failed to delete location");
+      alert(err.message || "Failed to delete nest");
     }
   };
 
@@ -108,14 +95,14 @@ export default function LocationsPage() {
     <div className="space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Locations</h1>
+          <h1 className="text-2xl font-bold">Nests</h1>
           <p className="text-muted-foreground">
-            Manage data center locations
+            Organize eggs into groups
           </p>
         </div>
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4 mr-2" />
-          Add Location
+          Create Nest
         </Button>
       </div>
 
@@ -125,7 +112,7 @@ export default function LocationsPage() {
             <CardContent className="p-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-lg font-semibold">
-                  {editLocation ? "Edit Location" : "Add Location"}
+                  {editNest ? "Edit Nest" : "Create Nest"}
                 </h2>
                 <button
                   onClick={() => setShowForm(false)}
@@ -150,7 +137,7 @@ export default function LocationsPage() {
                       setForm({ ...form, name: e.target.value })
                     }
                     className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                    placeholder="US East"
+                    placeholder="Game Servers"
                   />
                 </div>
                 <div>
@@ -178,9 +165,9 @@ export default function LocationsPage() {
                   <Button type="submit" disabled={submitting}>
                     {submitting
                       ? "Saving..."
-                      : editLocation
+                      : editNest
                       ? "Save Changes"
-                      : "Create Location"}
+                      : "Create Nest"}
                   </Button>
                 </div>
               </form>
@@ -200,68 +187,65 @@ export default function LocationsPage() {
             </Card>
           ))}
         </div>
-      ) : error ? (
+      ) : fetchError ? (
         <Card>
           <CardContent className="p-6">
             <p className="text-destructive">
-              Failed to load locations. Please try again.
+              Failed to load nests. Please try again.
             </p>
           </CardContent>
         </Card>
-      ) : locations.length > 0 ? (
+      ) : nests.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {locations.map((loc) => {
-            const count = getNodeCount(loc.id);
-            return (
-              <Card key={loc.id}>
-                <CardContent className="p-6 space-y-3">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-2">
-                      <MapPin className="h-4 w-4 text-muted-foreground" />
-                      <h3 className="font-semibold">{loc.name}</h3>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => openEdit(loc)}
-                        className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(loc.id, loc.name)}
-                        className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
+          {nests.map((nest) => (
+            <Card key={nest.id}>
+              <CardContent className="p-6 space-y-3">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2">
+                    <FolderTree className="h-4 w-4 text-muted-foreground" />
+                    <h3 className="font-semibold">{nest.name}</h3>
                   </div>
-                  {loc.description && (
-                    <p className="text-sm text-muted-foreground">
-                      {loc.description}
-                    </p>
-                  )}
-                  <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                    <Network className="h-3.5 w-3.5" />
-                    {count} node{count !== 1 ? "s" : ""}
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => openEdit(nest)}
+                      className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(nest.id, nest.name)}
+                      className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
-                </CardContent>
-              </Card>
-            );
-          })}
+                </div>
+                {nest.description && (
+                  <p className="text-sm text-muted-foreground">
+                    {nest.description}
+                  </p>
+                )}
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Egg className="h-3.5 w-3.5" />
+                  {nest.egg_count} egg{nest.egg_count !== 1 ? "s" : ""}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
         </div>
       ) : (
         <Card>
           <CardContent className="p-12 text-center">
-            <MapPin className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+            <FolderTree className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
             <h3 className="text-lg font-medium mb-2">
-              No locations available
+              No nests available
             </h3>
             <p className="text-muted-foreground mb-4">
-              Add a location to organize your nodes.
+              Create a nest to organize your eggs.
             </p>
             <Button onClick={openCreate}>
               <Plus className="h-4 w-4 mr-2" />
-              Add Location
+              Create Nest
             </Button>
           </CardContent>
         </Card>

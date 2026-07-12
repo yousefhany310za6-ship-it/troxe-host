@@ -5,6 +5,7 @@ import {
   requireAdmin,
 } from "../middleware/rbac.js";
 import { generateDaemonToken, hashDaemonToken } from "../middleware/auth.js";
+import { eventBus } from "../../events/index.js";
 
 const createNodeSchema = z.object({
   name: z.string().min(1).max(100),
@@ -257,18 +258,46 @@ export default async function nodeRoutes(app: FastifyInstance) {
       }
 
       const nodeId = nodeResult.rows[0].id;
-      const { stats } = request.body as { stats: Record<string, number> };
+      const body = request.body as {
+        stats: Record<string, number>;
+        crashed_servers?: string[];
+      };
 
       await app.db.query(
         `UPDATE nodes SET last_heartbeat_at = now(), status = 'online',
          allocated_memory_mb = $1, allocated_disk_mb = $2
          WHERE id = $3`,
         [
-          stats.allocatedMemoryMb || 0,
-          stats.allocatedDiskMb || 0,
+          body.stats?.allocatedMemoryMb || 0,
+          body.stats?.allocatedDiskMb || 0,
           nodeId,
         ]
       );
+
+      if (body.crashed_servers && body.crashed_servers.length > 0) {
+        for (const serverId of body.crashed_servers) {
+          const serverCheck = await app.db.query(
+            "SELECT id, status FROM servers WHERE id = $1 AND node_id = $2",
+            [serverId, nodeId]
+          );
+          if (serverCheck.rows.length === 0) continue;
+
+          await app.db.query(
+            `UPDATE servers SET
+              status = 'crashed',
+              crash_count = COALESCE(crash_count, 0) + 1,
+              last_crashed_at = now()
+             WHERE id = $1 AND status != 'crashed'`,
+            [serverId]
+          );
+
+          await eventBus.emit("server.crashed", {
+            subjectType: "server",
+            subjectId: serverId,
+            nodeId,
+          });
+        }
+      }
 
       return reply.send({ success: true });
     }
@@ -303,6 +332,159 @@ export default async function nodeRoutes(app: FastifyInstance) {
     }
   );
 
+  // Update location
+  app.put(
+    "/locations/:id",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as Partial<{
+        name: string;
+        description: string;
+      }>;
+
+      const updates: string[] = [];
+      const values: unknown[] = [];
+      let idx = 1;
+
+      if (body.name !== undefined) {
+        updates.push(`name = $${idx++}`);
+        values.push(body.name);
+      }
+      if (body.description !== undefined) {
+        updates.push(`description = $${idx++}`);
+        values.push(body.description);
+      }
+
+      if (updates.length === 0) {
+        return reply.status(400).send({ error: "No fields to update" });
+      }
+
+      values.push(id);
+      await app.db.query(
+        `UPDATE locations SET ${updates.join(", ")} WHERE id = $${idx}`,
+        values
+      );
+
+      return reply.send({ success: true });
+    }
+  );
+
+  // Delete location
+  app.delete(
+    "/locations/:id",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      const nodes = await app.db.query(
+        "SELECT COUNT(*) FROM nodes WHERE location_id = $1",
+        [id]
+      );
+      if (parseInt(nodes.rows[0].count) > 0) {
+        return reply.status(400).send({
+          error: "Cannot delete location with nodes in it",
+        });
+      }
+
+      await app.db.query("DELETE FROM locations WHERE id = $1", [id]);
+      return reply.send({ success: true });
+    }
+  );
+
+  // List nests
+  app.get(
+    "/nests",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const result = await app.db.query(
+        `SELECT n.*,
+          (SELECT COUNT(*) FROM eggs WHERE nest_id = n.id) as egg_count
+         FROM nests n ORDER BY n.name`
+      );
+      return reply.send({ nests: result.rows });
+    }
+  );
+
+  // Create nest
+  app.post(
+    "/nests",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { name, description } = request.body as {
+        name: string;
+        description?: string;
+      };
+
+      const result = await app.db.query(
+        "INSERT INTO nests (name, description) VALUES ($1, $2) RETURNING *",
+        [name, description || null]
+      );
+
+      return reply.status(201).send({ nest: result.rows[0] });
+    }
+  );
+
+  // Update nest
+  app.put(
+    "/nests/:id",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as Partial<{
+        name: string;
+        description: string;
+      }>;
+
+      const updates: string[] = [];
+      const values: unknown[] = [];
+      let idx = 1;
+
+      if (body.name !== undefined) {
+        updates.push(`name = $${idx++}`);
+        values.push(body.name);
+      }
+      if (body.description !== undefined) {
+        updates.push(`description = $${idx++}`);
+        values.push(body.description);
+      }
+
+      if (updates.length === 0) {
+        return reply.status(400).send({ error: "No fields to update" });
+      }
+
+      values.push(id);
+      await app.db.query(
+        `UPDATE nests SET ${updates.join(", ")} WHERE id = $${idx}`,
+        values
+      );
+
+      return reply.send({ success: true });
+    }
+  );
+
+  // Delete nest
+  app.delete(
+    "/nests/:id",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      const eggs = await app.db.query(
+        "SELECT COUNT(*) FROM eggs WHERE nest_id = $1",
+        [id]
+      );
+      if (parseInt(eggs.rows[0].count) > 0) {
+        return reply.status(400).send({
+          error: "Cannot delete nest with eggs in it",
+        });
+      }
+
+      await app.db.query("DELETE FROM nests WHERE id = $1", [id]);
+      return reply.send({ success: true });
+    }
+  );
+
   // List eggs
   app.get(
     "/eggs",
@@ -315,6 +497,154 @@ export default async function nodeRoutes(app: FastifyInstance) {
          ORDER BY n.name, e.name`
       );
       return reply.send({ eggs: result.rows });
+    }
+  );
+
+  // Create egg
+  app.post(
+    "/eggs",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = request.body as {
+        name: string;
+        nestId: string;
+        dockerImage: string;
+        startupCommand: string;
+        installScript?: string;
+        variables?: any[];
+        configFiles?: any[];
+        maxDatabases?: number;
+        maxAllocations?: number;
+        maxBackups?: number;
+        defaultMemoryMb?: number;
+        defaultDiskMb?: number;
+        defaultCpuPercent?: number;
+        defaultPidLimit?: number;
+      };
+
+      const result = await app.db.query(
+        `INSERT INTO eggs (
+          name, nest_id, docker_image, startup_command, install_script,
+          variables, config_files, max_databases, max_allocations, max_backups,
+          default_memory_mb, default_disk_mb, default_cpu_percent, default_pid_limit
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        RETURNING *`,
+        [
+          body.name,
+          body.nestId,
+          body.dockerImage,
+          body.startupCommand,
+          body.installScript || null,
+          JSON.stringify(body.variables || []),
+          JSON.stringify(body.configFiles || []),
+          body.maxDatabases ?? 0,
+          body.maxAllocations ?? 1,
+          body.maxBackups ?? 5,
+          body.defaultMemoryMb ?? 1024,
+          body.defaultDiskMb ?? 10240,
+          body.defaultCpuPercent ?? 100,
+          body.defaultPidLimit ?? 1024,
+        ]
+      );
+
+      return reply.status(201).send({ egg: result.rows[0] });
+    }
+  );
+
+  // Update egg
+  app.put(
+    "/eggs/:id",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as Partial<{
+        name: string;
+        nestId: string;
+        dockerImage: string;
+        startupCommand: string;
+        installScript: string;
+        variables: any[];
+        configFiles: any[];
+        maxDatabases: number;
+        maxAllocations: number;
+        maxBackups: number;
+        defaultMemoryMb: number;
+        defaultDiskMb: number;
+        defaultCpuPercent: number;
+        defaultPidLimit: number;
+      }>;
+
+      const fieldMap: Record<string, string> = {
+        name: "name",
+        nestId: "nest_id",
+        dockerImage: "docker_image",
+        startupCommand: "startup_command",
+        installScript: "install_script",
+        maxDatabases: "max_databases",
+        maxAllocations: "max_allocations",
+        maxBackups: "max_backups",
+        defaultMemoryMb: "default_memory_mb",
+        defaultDiskMb: "default_disk_mb",
+        defaultCpuPercent: "default_cpu_percent",
+        defaultPidLimit: "default_pid_limit",
+      };
+
+      const updates: string[] = [];
+      const values: unknown[] = [];
+      let idx = 1;
+
+      for (const [camel, column] of Object.entries(fieldMap)) {
+        const val = (body as any)[camel];
+        if (val !== undefined) {
+          updates.push(`${column} = $${idx++}`);
+          values.push(val);
+        }
+      }
+
+      if (body.variables !== undefined) {
+        updates.push(`variables = $${idx++}`);
+        values.push(JSON.stringify(body.variables));
+      }
+      if (body.configFiles !== undefined) {
+        updates.push(`config_files = $${idx++}`);
+        values.push(JSON.stringify(body.configFiles));
+      }
+
+      if (updates.length === 0) {
+        return reply.status(400).send({ error: "No fields to update" });
+      }
+
+      updates.push(`updated_at = now()`);
+      values.push(id);
+
+      await app.db.query(
+        `UPDATE eggs SET ${updates.join(", ")} WHERE id = $${idx}`,
+        values
+      );
+
+      return reply.send({ success: true });
+    }
+  );
+
+  // Delete egg
+  app.delete(
+    "/eggs/:id",
+    { preHandler: [authenticateSession, requireAdmin] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      const servers = await app.db.query(
+        "SELECT COUNT(*) FROM servers WHERE egg_id = $1",
+        [id]
+      );
+      if (parseInt(servers.rows[0].count) > 0) {
+        return reply.status(400).send({
+          error: "Cannot delete egg that is in use by servers",
+        });
+      }
+
+      await app.db.query("DELETE FROM eggs WHERE id = $1", [id]);
+      return reply.send({ success: true });
     }
   );
 

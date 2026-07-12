@@ -13,6 +13,7 @@ import {
   Plus,
   Activity,
 } from "lucide-react";
+import Link from "next/link";
 
 interface DashboardStats {
   servers: number;
@@ -88,10 +89,12 @@ export default function DashboardPage() {
           </p>
         </div>
         {user?.rootAdmin && (
-          <Button>
-            <Plus className="h-4 w-4 mr-2" />
-            Create Server
-          </Button>
+          <Link href="/dashboard/servers/new">
+            <Button>
+              <Plus className="h-4 w-4 mr-2" />
+              Create Server
+            </Button>
+          </Link>
         )}
       </div>
 

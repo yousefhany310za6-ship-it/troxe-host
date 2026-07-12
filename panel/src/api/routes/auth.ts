@@ -18,6 +18,17 @@ const loginSchema = z.object({
   totpCode: z.string().length(6).optional(),
 });
 
+const updateProfileSchema = z.object({
+  username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9_-]+$/).optional(),
+  email: z.string().email().optional(),
+  currentPassword: z.string().min(1),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8).max(128),
+});
+
 export default async function authRoutes(app: FastifyInstance) {
   // Register
   app.post("/auth/register", async (request: FastifyRequest, reply: FastifyReply) => {
@@ -183,6 +194,100 @@ export default async function authRoutes(app: FastifyInstance) {
     return reply.send({ user: request.user });
   });
 
+  // Update profile (username / email)
+  app.put("/auth/profile", {
+    preHandler: [authenticateSession],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = updateProfileSchema.parse(request.body);
+
+    // Fetch current user
+    const userResult = await app.db.query(
+      "SELECT id, username, email, password_hash FROM users WHERE id = $1",
+      [request.user!.userId]
+    );
+    if (userResult.rows.length === 0) {
+      return reply.status(404).send({ error: "User not found" });
+    }
+    const user = userResult.rows[0];
+
+    // Always require current password
+    const valid = await verifyPassword(body.currentPassword, user.password_hash);
+    if (!valid) {
+      return reply.status(401).send({ error: "Current password is incorrect" });
+    }
+
+    const updates: string[] = [];
+    const values: unknown[] = [];
+    let idx = 1;
+
+    if (body.username !== undefined && body.username !== user.username) {
+      const dup = await app.db.query(
+        "SELECT id FROM users WHERE username = $1 AND id != $2",
+        [body.username, request.user!.userId]
+      );
+      if (dup.rows.length > 0) {
+        return reply.status(409).send({ error: "Username already taken" });
+      }
+      updates.push(`username = $${idx++}`);
+      values.push(body.username);
+    }
+
+    if (body.email !== undefined && body.email !== user.email) {
+      const dup = await app.db.query(
+        "SELECT id FROM users WHERE email = $1 AND id != $2",
+        [body.email, request.user!.userId]
+      );
+      if (dup.rows.length > 0) {
+        return reply.status(409).send({ error: "Email already taken" });
+      }
+      updates.push(`email = $${idx++}`);
+      values.push(body.email);
+    }
+
+    if (updates.length === 0) {
+      return reply.status(400).send({ error: "No changes to update" });
+    }
+
+    updates.push(`updated_at = now()`);
+    values.push(request.user!.userId);
+
+    await app.db.query(
+      `UPDATE users SET ${updates.join(", ")} WHERE id = $${idx}`,
+      values
+    );
+
+    return reply.send({ success: true });
+  });
+
+  // Change password
+  app.put("/auth/password", {
+    preHandler: [authenticateSession],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = changePasswordSchema.parse(request.body);
+
+    const userResult = await app.db.query(
+      "SELECT password_hash FROM users WHERE id = $1",
+      [request.user!.userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return reply.status(404).send({ error: "User not found" });
+    }
+
+    const valid = await verifyPassword(body.currentPassword, userResult.rows[0].password_hash);
+    if (!valid) {
+      return reply.status(401).send({ error: "Current password is incorrect" });
+    }
+
+    const newHash = await hashPassword(body.newPassword);
+    await app.db.query(
+      "UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2",
+      [newHash, request.user!.userId]
+    );
+
+    return reply.send({ success: true });
+  });
+
   // Enable 2FA
   app.post("/auth/2fa/enable", {
     preHandler: [authenticateSession],
@@ -273,19 +378,30 @@ export default async function authRoutes(app: FastifyInstance) {
   app.post("/auth/api-keys", {
     preHandler: [authenticateSession],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const { name, permissions } = request.body as {
+    const { name, expiresInDays } = request.body as {
       name: string;
-      permissions: Record<string, boolean>;
+      expiresInDays?: number;
     };
+
+    if (!name || name.trim().length === 0) {
+      return reply.status(400).send({ error: "Name is required" });
+    }
 
     const prefix = request.user!.rootAdmin ? "txa_" : "txc_";
     const { key, keyHash, keyPrefix } = generateApiKey(prefix);
 
+    let expiresAt = null;
+    if (expiresInDays && expiresInDays > 0) {
+      const d = new Date();
+      d.setDate(d.getDate() + expiresInDays);
+      expiresAt = d.toISOString();
+    }
+
     const result = await app.db.query(
-      `INSERT INTO api_keys (user_id, name, key_prefix, key_hash, permissions)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, key_prefix, permissions, created_at`,
-      [request.user!.userId, name, keyPrefix, keyHash, JSON.stringify(permissions)]
+      `INSERT INTO api_keys (user_id, name, key_prefix, key_hash, permissions, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, key_prefix, permissions, expires_at, created_at`,
+      [request.user!.userId, name.trim(), keyPrefix, keyHash, "{}", expiresAt]
     );
 
     return reply.status(201).send({

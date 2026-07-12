@@ -36,12 +36,16 @@ type ServerEvent struct {
 }
 
 type ServerContainer struct {
-	ServerID    string
-	ContainerID string
-	Status      string
-	Image       string
-	StartedAt   time.Time
-	Events      []ServerEvent
+	ServerID       string
+	ContainerID    string
+	Status         string
+	Image          string
+	StartedAt      time.Time
+	Events         []ServerEvent
+	CrashCount     int
+	LastCrashedAt  time.Time
+	NeedsAttention bool
+	autoRestarted  bool
 }
 
 func NewManager(dockerSocket string, dataDirectory string) (*Manager, error) {
@@ -109,6 +113,117 @@ func (m *Manager) Restore(ctx context.Context) error {
 	return nil
 }
 
+// StartHealthCheck runs a periodic health check loop that inspects Docker state
+// for all tracked containers. It marks crashed containers and auto-restarts them
+// if the troxe.auto_restart=true label is set. Respects rate limiting to prevent
+// restart loops (max 3 restarts per 10-minute window).
+func (m *Manager) StartHealthCheck(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.runHealthCheck(ctx)
+		}
+	}
+}
+
+func (m *Manager) runHealthCheck(ctx context.Context) {
+	m.mu.RLock()
+	serverIDs := make([]string, 0, len(m.containers))
+	for id := range m.containers {
+		serverIDs = append(serverIDs, id)
+	}
+	m.mu.RUnlock()
+
+	for _, serverID := range serverIDs {
+		m.mu.RLock()
+		sc, ok := m.containers[serverID]
+		m.mu.RUnlock()
+		if !ok {
+			continue
+		}
+
+		inspect, err := m.client.ContainerInspect(ctx, sc.ContainerID)
+		if err != nil {
+			log.Printf("[healthcheck] failed to inspect container %s: %v", serverID, err)
+			continue
+		}
+
+		if inspect.State == nil {
+			continue
+		}
+
+		crashed := false
+		if inspect.State.OOMKilled {
+			crashed = true
+		} else if inspect.State.ExitCode != 0 && (inspect.State.Status == "exited" || inspect.State.Status == "dead") {
+			crashed = true
+		}
+
+		if !crashed {
+			continue
+		}
+
+		m.mu.Lock()
+		sc.Status = "crashed"
+		sc.CrashCount++
+		sc.LastCrashedAt = time.Now()
+		sc.NeedsAttention = true
+		m.mu.Unlock()
+
+		// Check for auto-restart label
+		label, hasLabel := inspect.Config.Labels["troxe.auto_restart"]
+		if !hasLabel || label != "true" {
+			log.Printf("[healthcheck] server %s crashed (exit code %d, OOM=%v) — no auto-restart label", serverID, inspect.State.ExitCode, inspect.State.OOMKilled)
+			continue
+		}
+
+		// Rate limit: max 3 restarts in 10 minutes
+		m.mu.RLock()
+		crashCount := sc.CrashCount
+		lastCrashed := sc.LastCrashedAt
+		m.mu.RUnlock()
+
+		if crashCount > 3 {
+			log.Printf("[healthcheck] server %s exceeded auto-restart limit (3 in 10m), marking NeedsAttention", serverID)
+			m.mu.Lock()
+			sc.NeedsAttention = true
+			m.mu.Unlock()
+			continue
+		}
+
+		if crashCount > 1 && time.Since(lastCrashed) < 10*time.Minute {
+			log.Printf("[healthcheck] server %s auto-restart throttled: %d crashes in last 10m", serverID, crashCount)
+			continue
+		}
+
+		log.Printf("[healthcheck] auto-restarting server %s (crash #%d)", serverID, crashCount)
+		if err := m.Start(ctx, serverID); err != nil {
+			log.Printf("[healthcheck] failed to auto-restart server %s: %v", serverID, err)
+		}
+	}
+}
+
+// GetCrashedServers returns a list of server IDs that have crashed since the
+// last call. This clears the NeedsAttention flag.
+func (m *Manager) GetCrashedServers() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var crashed []string
+	for id, sc := range m.containers {
+		if sc.NeedsAttention {
+			crashed = append(crashed, id)
+			sc.NeedsAttention = false
+		}
+	}
+	return crashed
+}
+
 func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContainer, error) {
 	// Ensure data directory exists
 	if err := os.MkdirAll(opts.DataPath, 0755); err != nil {
@@ -169,6 +284,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*ServerContai
 		Labels: map[string]string{
 			"troxe.managed":    "true",
 			"troxe.server_id":  opts.ServerID,
+			"troxe.auto_restart": fmt.Sprintf("%t", opts.AutoRestart),
 		},
 	}
 	if opts.Startup != "" {
@@ -248,6 +364,7 @@ func (m *Manager) Start(ctx context.Context, serverID string) error {
 
 	sc.StartedAt = time.Now()
 	sc.Events = append(sc.Events, ServerEvent{Type: "start", Timestamp: sc.StartedAt})
+	sc.NeedsAttention = false
 
 	if err := m.client.ContainerStart(ctx, sc.ContainerID, container.StartOptions{}); err != nil {
 		errStr := err.Error()
@@ -644,6 +761,7 @@ type CreateOptions struct {
 	PidLimit    int64
 	DataPath    string
 	Ports       []PortBinding
+	AutoRestart bool
 }
 
 // extractMainFile tries to extract the main file from a startup command

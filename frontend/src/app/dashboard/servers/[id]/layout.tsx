@@ -17,6 +17,7 @@ const tabs = [
   { name: "Overview", href: "", icon: Globe },
   { name: "Console", href: "console", icon: Terminal },
   { name: "Files", href: "files", icon: Folder },
+  { name: "Databases", href: "databases", icon: Database },
   { name: "Backups", href: "backups", icon: Database },
   { name: "Schedules", href: "schedules", icon: Clock },
   { name: "Subusers", href: "subusers", icon: Users },

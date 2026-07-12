@@ -19,8 +19,12 @@ import scheduleRoutes from "./api/routes/schedules.js";
 import subuserRoutes from "./api/routes/subusers.js";
 import serverSettingsRoutes from "./api/routes/server-settings.js";
 import monitoringRoutes from "./api/routes/monitoring.js";
+import monitoringAdminRoutes from "./api/routes/monitoring-admin.js";
 import themeRoutes from "./api/routes/themes.js";
+import databaseHostRoutes from "./api/routes/database-hosts.js";
+import databaseRoutes from "./api/routes/databases.js";
 import { startScheduler } from "./services/scheduler.js";
+import { startStatsCollector } from "./services/stats-collector.js";
 import { securityHeaders } from "./api/middleware/security.js";
 
 // Extend Fastify types
@@ -118,7 +122,10 @@ await app.register(scheduleRoutes, { prefix: "/api/v1" });
 await app.register(subuserRoutes, { prefix: "/api/v1" });
 await app.register(serverSettingsRoutes, { prefix: "/api/v1" });
 await app.register(monitoringRoutes, { prefix: "/api/v1" });
+await app.register(monitoringAdminRoutes, { prefix: "/api/v1" });
 await app.register(themeRoutes, { prefix: "/api/v1" });
+await app.register(databaseHostRoutes, { prefix: "/api/v1" });
+await app.register(databaseRoutes, { prefix: "/api/v1" });
 
 // 404 handler
 app.setNotFoundHandler((request, reply) => {
@@ -173,6 +180,9 @@ async function start() {
 
   // Start schedule executor
   startScheduler();
+
+  // Start stats collector
+  startStatsCollector();
 }
 
 start().catch((err) => {

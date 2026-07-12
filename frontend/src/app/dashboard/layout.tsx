@@ -10,10 +10,14 @@ import {
   Users,
   MapPin,
   Egg,
+  FolderTree,
   Settings,
   LogOut,
   Menu,
   X,
+  Activity,
+  ListTodo,
+  Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth";
@@ -24,7 +28,11 @@ const navigation = [
   { name: "Nodes", href: "/dashboard/nodes", icon: Network },
   { name: "Users", href: "/dashboard/users", icon: Users },
   { name: "Locations", href: "/dashboard/locations", icon: MapPin },
+  { name: "Nests", href: "/dashboard/nests", icon: FolderTree },
   { name: "Eggs", href: "/dashboard/eggs", icon: Egg },
+  { name: "Database Hosts", href: "/dashboard/database-hosts", icon: Database },
+  { name: "Activity", href: "/dashboard/activity", icon: Activity },
+  { name: "Jobs", href: "/dashboard/jobs", icon: ListTodo },
   { name: "Settings", href: "/dashboard/settings", icon: Settings },
 ];
 

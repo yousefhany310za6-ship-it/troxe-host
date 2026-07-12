@@ -90,6 +90,7 @@ func (s *Server) Start() error {
 
 	// Health
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/crashed", s.handleCrashed)
 
 	// Auth middleware
 	handler := s.authMiddleware(mux)
@@ -106,6 +107,7 @@ func (s *Server) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	go s.startHeartbeat(ctx)
+	go s.containerMgr.StartHealthCheck(ctx, 15*time.Second)
 
 	log.Printf("Node Agent listening on port %d", s.cfg.ListenPort)
 	return s.httpServer.ListenAndServe()
@@ -132,12 +134,14 @@ func (s *Server) sendHeartbeat() {
 	defer cancel()
 
 	memMb, diskMb := s.containerMgr.GetAllocatedStats(ctx)
+	crashed := s.containerMgr.GetCrashedServers()
 
 	payload, err := json.Marshal(map[string]interface{}{
 		"stats": map[string]int64{
 			"allocatedMemoryMb": memMb,
 			"allocatedDiskMb":   diskMb,
 		},
+		"crashed_servers": crashed,
 	})
 	if err != nil {
 		return
@@ -631,6 +635,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":  "healthy",
 		"version": "0.1.0",
 		"uptime":  time.Since(startTime).String(),
+	})
+}
+
+func (s *Server) handleCrashed(w http.ResponseWriter, r *http.Request) {
+	crashed := s.containerMgr.GetCrashedServers()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"crashed_servers": crashed,
 	})
 }
 

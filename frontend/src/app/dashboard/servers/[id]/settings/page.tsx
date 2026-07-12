@@ -7,6 +7,7 @@ import { useAuthStore } from "@/stores/auth";
 import { Settings, Save, Trash2, AlertTriangle, Plus, X, Lock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import ConfirmModal from "@/components/confirm-modal";
 
 interface ServerSettings {
   name: string;
@@ -39,6 +40,9 @@ export default function SettingsPage({
   const [environment, setEnvironment] = useState<Array<{ key: string; value: string }>>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [showReinstallConfirm, setShowReinstallConfirm] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [reinstalling, setReinstalling] = useState(false);
 
   useEffect(() => {
     if (settings) {
@@ -84,7 +88,7 @@ export default function SettingsPage({
   }
 
   async function handleDelete() {
-    if (!confirm("Are you sure? This will permanently delete the server.")) return;
+    setShowDeleteConfirm(false);
     try {
       await fetchApi(`/api/v1/servers/${id}`, { method: "DELETE" });
       window.location.href = "/dashboard/servers";
@@ -93,10 +97,13 @@ export default function SettingsPage({
   }
 
   async function handleReinstall() {
-    if (!confirm("Reinstall the server? All data will be lost.")) return;
+    setShowReinstallConfirm(false);
+    setReinstalling(true);
     try {
       await fetchApi(`/api/v1/servers/${id}/reinstall`, { method: "POST" });
     } catch {
+    } finally {
+      setReinstalling(false);
     }
   }
 
@@ -324,8 +331,12 @@ export default function SettingsPage({
               <p className="font-medium">Reinstall Server</p>
               <p className="text-sm text-muted-foreground">Reset the server to its default state. All data will be lost.</p>
             </div>
-            <Button variant="outline" onClick={handleReinstall}>
-              Reinstall
+            <Button
+              variant="outline"
+              onClick={() => setShowReinstallConfirm(true)}
+              disabled={reinstalling}
+            >
+              {reinstalling ? "Reinstalling..." : "Reinstall"}
             </Button>
           </div>
           <div className="flex items-center justify-between p-4 rounded-lg border border-destructive/30">
@@ -333,13 +344,35 @@ export default function SettingsPage({
               <p className="font-medium text-destructive">Delete Server</p>
               <p className="text-sm text-muted-foreground">Permanently delete this server and all its data.</p>
             </div>
-            <Button variant="destructive" onClick={handleDelete}>
+            <Button variant="destructive" onClick={() => setShowDeleteConfirm(true)}>
               <Trash2 className="h-4 w-4 mr-2" />
               Delete
             </Button>
           </div>
         </CardContent>
       </Card>
+
+      {/* Reinstall Confirmation Modal */}
+      <ConfirmModal
+        open={showReinstallConfirm}
+        title="Reinstall Server"
+        description="This will reinstall the server. All data may be lost. Are you sure you want to continue?"
+        confirmLabel="Reinstall"
+        variant="warning"
+        onConfirm={handleReinstall}
+        onCancel={() => setShowReinstallConfirm(false)}
+      />
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        open={showDeleteConfirm}
+        title="Delete Server"
+        description="This will permanently delete this server and all of its data. This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   );
 }

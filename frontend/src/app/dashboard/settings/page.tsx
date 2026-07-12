@@ -3,19 +3,27 @@
 import { useState, useEffect } from "react";
 import useSWR from "swr";
 import { fetchApi } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth";
 import {
   ShieldCheck,
   ShieldOff,
   KeyRound,
-  ScanLine,
   Loader2,
   Check,
   X,
+  User,
+  Lock,
+  Plus,
+  Trash2,
+  Copy,
+  AlertTriangle,
+  Clock,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import ConfirmModal from "@/components/confirm-modal";
 
 interface MeResponse {
   user: {
@@ -26,6 +34,16 @@ interface MeResponse {
   };
 }
 
+interface ApiKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  permissions: Record<string, boolean>;
+  expires_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+}
+
 type Phase = "idle" | "enabling" | "recovery";
 
 export default function SettingsPage() {
@@ -34,6 +52,7 @@ export default function SettingsPage() {
     (url: string) => fetchApi<MeResponse>(url)
   );
 
+  const setUser = useAuthStore((s) => s.setUser);
   const totpEnabled = me?.user.totpEnabled ?? false;
 
   const [phase, setPhase] = useState<Phase>("idle");
@@ -43,6 +62,42 @@ export default function SettingsPage() {
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Profile state
+  const [profileUsername, setProfileUsername] = useState("");
+  const [profileEmail, setProfileEmail] = useState("");
+  const [profilePassword, setProfilePassword] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+
+  // Password state
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordSaved, setPasswordSaved] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+
+  // API Keys state
+  const { data: keysData, mutate: mutateKeys } = useSWR<{ keys: ApiKey[] }>(
+    `/api/v1/auth/api-keys`,
+    (url: string) => fetchApi<{ keys: ApiKey[] }>(url)
+  );
+  const [showKeyModal, setShowKeyModal] = useState(false);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyExpiry, setNewKeyExpiry] = useState("");
+  const [newKeyCreating, setNewKeyCreating] = useState(false);
+  const [createdKey, setCreatedKey] = useState<string | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
+
+  // Populate profile fields when data loads
+  useEffect(() => {
+    if (me?.user) {
+      setProfileUsername(me.user.username);
+      setProfileEmail(me.user.email);
+    }
+  }, [me]);
 
   // Clear sensitive state on unmount
   useEffect(() => {
@@ -110,15 +165,253 @@ export default function SettingsPage() {
     }
   }
 
+  async function saveProfile() {
+    setProfileError(null);
+    setProfileSaved(false);
+    setProfileSaving(true);
+    try {
+      await fetchApi(`/api/v1/auth/profile`, {
+        method: "PUT",
+        body: JSON.stringify({
+          username: profileUsername !== me?.user.username ? profileUsername : undefined,
+          email: profileEmail !== me?.user.email ? profileEmail : undefined,
+          currentPassword: profilePassword,
+        }),
+      });
+      setProfileSaved(true);
+      setProfilePassword("");
+      mutate();
+      // Update auth store with new values
+      if (me?.user) {
+        setUser({
+          ...me.user,
+          username: profileUsername !== me?.user.username ? profileUsername : me.user.username,
+          email: profileEmail !== me?.user.email ? profileEmail : me.user.email,
+        });
+      }
+      setTimeout(() => setProfileSaved(false), 2000);
+    } catch (e) {
+      setProfileError((e as Error).message);
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
+  async function changePassword() {
+    setPasswordError(null);
+    setPasswordSaved(false);
+    if (newPassword !== confirmPassword) {
+      setPasswordError("Passwords do not match");
+      return;
+    }
+    if (newPassword.length < 8) {
+      setPasswordError("New password must be at least 8 characters");
+      return;
+    }
+    setPasswordSaving(true);
+    try {
+      await fetchApi(`/api/v1/auth/password`, {
+        method: "PUT",
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      setPasswordSaved(true);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setTimeout(() => setPasswordSaved(false), 2000);
+    } catch (e) {
+      setPasswordError((e as Error).message);
+    } finally {
+      setPasswordSaving(false);
+    }
+  }
+
+  async function createApiKey() {
+    setNewKeyCreating(true);
+    try {
+      const body: Record<string, unknown> = { name: newKeyName.trim() };
+      if (newKeyExpiry) {
+        body.expiresInDays = parseInt(newKeyExpiry, 10);
+      }
+      const res = await fetchApi<ApiKey & { key: string }>(`/api/v1/auth/api-keys`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setCreatedKey(res.key);
+      mutateKeys();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setNewKeyCreating(false);
+    }
+  }
+
+  async function revokeApiKey(id: string) {
+    try {
+      await fetchApi(`/api/v1/auth/api-keys/${id}`, { method: "DELETE" });
+      mutateKeys();
+      setRevokeTarget(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  const hasProfileChanges =
+    profileUsername !== (me?.user?.username ?? "") ||
+    profileEmail !== (me?.user?.email ?? "") ||
+    profilePassword.length > 0;
+
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
         <h1 className="text-2xl font-bold">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Manage your account security
+          Manage your account and security
         </p>
       </div>
 
+      {/* Profile Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <User className="h-5 w-5" />
+            Profile
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Username</label>
+                <Input
+                  value={profileUsername}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setProfileUsername(e.target.value)
+                  }
+                  placeholder="Username"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Email</label>
+                <Input
+                  type="email"
+                  value={profileEmail}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setProfileEmail(e.target.value)
+                  }
+                  placeholder="email@example.com"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">
+                  Current Password <span className="text-muted-foreground">(required to save)</span>
+                </label>
+                <Input
+                  type="password"
+                  value={profilePassword}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setProfilePassword(e.target.value)
+                  }
+                  placeholder="Enter your current password"
+                />
+              </div>
+              {profileError && (
+                <p className="text-sm text-destructive bg-destructive/10 p-3 rounded-lg">
+                  {profileError}
+                </p>
+              )}
+              {profileSaved && (
+                <p className="text-sm text-emerald-400 bg-emerald-500/10 p-3 rounded-lg flex items-center gap-2">
+                  <Check className="h-4 w-4" />
+                  Profile updated successfully
+                </p>
+              )}
+              <Button
+                onClick={saveProfile}
+                disabled={profileSaving || !hasProfileChanges}
+              >
+                {profileSaving ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Check className="h-4 w-4 mr-2" />
+                )}
+                {profileSaving ? "Saving..." : "Save Profile"}
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Change Password Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Lock className="h-5 w-5" />
+            Change Password
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Current Password</label>
+            <Input
+              type="password"
+              value={currentPassword}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setCurrentPassword(e.target.value)
+              }
+              placeholder="Enter current password"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">New Password</label>
+            <Input
+              type="password"
+              value={newPassword}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setNewPassword(e.target.value)
+              }
+              placeholder="Min 8 characters"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Confirm New Password</label>
+            <Input
+              type="password"
+              value={confirmPassword}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setConfirmPassword(e.target.value)
+              }
+              placeholder="Re-enter new password"
+            />
+          </div>
+          {passwordError && (
+            <p className="text-sm text-destructive bg-destructive/10 p-3 rounded-lg">
+              {passwordError}
+            </p>
+          )}
+          {passwordSaved && (
+            <p className="text-sm text-emerald-400 bg-emerald-500/10 p-3 rounded-lg flex items-center gap-2">
+              <Check className="h-4 w-4" />
+              Password changed successfully
+            </p>
+          )}
+          <Button
+            onClick={changePassword}
+            disabled={passwordSaving || !currentPassword || !newPassword || !confirmPassword}
+          >
+            {passwordSaving ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Lock className="h-4 w-4 mr-2" />
+            )}
+            {passwordSaving ? "Changing..." : "Change Password"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* 2FA Section */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -299,6 +592,186 @@ export default function SettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* API Keys Section */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <KeyRound className="h-5 w-5" />
+            API Keys
+          </CardTitle>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setShowKeyModal(true);
+              setCreatedKey(null);
+              setNewKeyName("");
+              setNewKeyExpiry("");
+            }}
+          >
+            <Plus className="h-4 w-4 mr-1.5" />
+            Create Key
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {keysData?.keys && keysData.keys.length === 0 && (
+            <p className="text-sm text-muted-foreground">No API keys yet.</p>
+          )}
+          {keysData?.keys && keysData.keys.length > 0 && (
+            <div className="space-y-3">
+              {keysData.keys.map((k) => (
+                <div
+                  key={k.id}
+                  className="flex items-center justify-between p-3 rounded-lg border border-border"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{k.name}</p>
+                    <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                      <span className="font-mono bg-muted px-1.5 py-0.5 rounded">
+                        {k.key_prefix}...
+                      </span>
+                      <span>
+                        Created {new Date(k.created_at).toLocaleDateString()}
+                      </span>
+                      {k.last_used_at && (
+                        <span>
+                          Last used {new Date(k.last_used_at).toLocaleDateString()}
+                        </span>
+                      )}
+                      {k.expires_at && (
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          Expires {new Date(k.expires_at).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive flex-shrink-0"
+                    onClick={() => setRevokeTarget(k)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Create API Key Modal */}
+      {showKeyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { if (!createdKey) setShowKeyModal(false); }} />
+          <div className="relative bg-card border border-border rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6 space-y-4 animate-in fade-in-0 zoom-in-95 duration-150">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Create API Key</h3>
+              {!createdKey && (
+                <button onClick={() => setShowKeyModal(false)} className="text-muted-foreground hover:text-foreground">
+                  <X className="h-5 w-5" />
+                </button>
+              )}
+            </div>
+
+            {createdKey ? (
+              <div className="space-y-3">
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+                  <AlertTriangle className="h-4 w-4 text-yellow-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-sm text-yellow-300">
+                    This key is shown only once. Copy it now — you won't be able to see it again.
+                  </p>
+                </div>
+                <div className="relative">
+                  <Input
+                    readOnly
+                    value={createdKey}
+                    className="font-mono text-xs pr-10"
+                    onClick={(e: React.MouseEvent<HTMLInputElement>) => {
+                      (e.target as HTMLInputElement).select();
+                    }}
+                  />
+                  <button
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      navigator.clipboard.writeText(createdKey);
+                    }}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </button>
+                </div>
+                <Button
+                  className="w-full"
+                  onClick={() => {
+                    setShowKeyModal(false);
+                    setCreatedKey(null);
+                  }}
+                >
+                  Done
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Name</label>
+                  <Input
+                    placeholder="e.g. CI/CD Pipeline"
+                    value={newKeyName}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setNewKeyName(e.target.value)
+                    }
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Expires in (days) <span className="text-muted-foreground">(optional)</span>
+                  </label>
+                  <Input
+                    type="number"
+                    min={1}
+                    placeholder="Leave empty for no expiry"
+                    value={newKeyExpiry}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setNewKeyExpiry(e.target.value)
+                    }
+                  />
+                </div>
+                <div className="flex justify-end gap-3">
+                  <Button variant="outline" size="sm" onClick={() => setShowKeyModal(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={createApiKey}
+                    disabled={newKeyCreating || !newKeyName.trim()}
+                  >
+                    {newKeyCreating ? (
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    ) : (
+                      <Plus className="h-4 w-4 mr-1" />
+                    )}
+                    Create
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Revoke Confirmation Modal */}
+      <ConfirmModal
+        open={!!revokeTarget}
+        title="Revoke API Key"
+        description={`Are you sure you want to revoke "${revokeTarget?.name}"? Any application using this key will stop working.`}
+        confirmLabel="Revoke"
+        variant="danger"
+        onConfirm={() => revokeTarget && revokeApiKey(revokeTarget.id)}
+        onCancel={() => setRevokeTarget(null)}
+      />
     </div>
   );
 }

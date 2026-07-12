@@ -13,7 +13,7 @@ interface Server {
   id: string;
   name: string;
   nodeId: string;
-  status: "running" | "stopped" | "installing";
+  status: "running" | "stopped" | "crashed" | "installing" | "install_pending";
   memoryLimit: number;
   memoryUsed: number;
   diskLimit: number;
@@ -21,12 +21,24 @@ interface Server {
   owner: string;
   ip: string;
   port: number;
+  crashCount: number;
+  lastCrashedAt: string | null;
 }
 
 const statusVariant: Record<Server["status"], "success" | "destructive" | "warning"> = {
   running: "success",
   stopped: "destructive",
+  crashed: "destructive",
   installing: "warning",
+  install_pending: "warning",
+};
+
+const statusColor: Record<Server["status"], string> = {
+  running: "text-emerald-500",
+  stopped: "text-gray-500",
+  crashed: "text-red-500",
+  installing: "text-yellow-500",
+  install_pending: "text-yellow-500",
 };
 
 function formatBytes(mb: number) {
@@ -87,12 +99,20 @@ export default function ServersPage() {
                         <h3 className="font-semibold">{server.name}</h3>
                       </div>
                       <p className="text-sm text-muted-foreground">
-                        Node: {server.nodeId}
+                        Node: {server.nodeName || server.nodeId}
                       </p>
                     </div>
-                    <Badge variant={statusVariant[server.status]}>
-                      {server.status}
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      {server.crashCount > 0 && (
+                        <span className="text-xs text-red-400" title={`Crashed ${server.crashCount} time(s)`}>
+                          {server.crashCount}x
+                        </span>
+                      )}
+                      <Badge variant={statusVariant[server.status]} className="gap-1.5">
+                        <span className={`h-2 w-2 rounded-full ${statusColor[server.status]}`} />
+                        {server.status}
+                      </Badge>
+                    </div>
                   </div>
 
                   <div className="space-y-2">

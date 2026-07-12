@@ -15,12 +15,15 @@ interface Egg {
   startup_command: string;
   default_memory_mb: number;
   default_disk_mb: number;
+  default_cpu_percent: number;
 }
 
 interface Node {
   id: string;
   name: string;
   status: string;
+  location_id: string | null;
+  location_name: string | null;
 }
 
 export default function NewServerPage() {
@@ -31,6 +34,7 @@ export default function NewServerPage() {
   const [memoryMb, setMemoryMb] = useState("1024");
   const [diskMb, setDiskMb] = useState("5120");
   const [startupCommand, setStartupCommand] = useState("");
+  const [cpuPercent, setCpuPercent] = useState("100");
   const [envVars, setEnvVars] = useState<Array<{ key: string; value: string }>>(
     []
   );
@@ -51,11 +55,20 @@ export default function NewServerPage() {
 
   const selectedEgg = eggs.find((e) => e.id === eggId);
 
+  const nodesByLocation = nodes
+    .filter((n) => n.status === "online")
+    .reduce<Record<string, Node[]>>((acc, node) => {
+      const loc = node.location_name || "Unknown Location";
+      (acc[loc] ??= []).push(node);
+      return acc;
+    }, {});
+
   useEffect(() => {
     if (selectedEgg) {
       setStartupCommand(selectedEgg.startup_command);
       setMemoryMb(String(selectedEgg.default_memory_mb));
       setDiskMb(String(selectedEgg.default_disk_mb));
+      setCpuPercent(String(selectedEgg.default_cpu_percent));
     }
   }, [selectedEgg]);
 
@@ -100,8 +113,9 @@ export default function NewServerPage() {
             nodeId,
             memoryMb: Number(memoryMb),
             diskMb: Number(diskMb),
+            cpuPercent: Number(cpuPercent),
             startupCommand: startupCommand || undefined,
-            envVars:
+            environment:
               Object.keys(envObject).length > 0 ? envObject : undefined,
           }),
         }
@@ -179,18 +193,20 @@ export default function NewServerPage() {
                   className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                 >
                   <option value="">Select node</option>
-                  {nodes
-                    .filter((n) => n.status === "online")
-                    .map((node) => (
-                      <option key={node.id} value={node.id}>
-                        {node.name}
-                      </option>
-                    ))}
+                  {Object.entries(nodesByLocation).map(([location, locNodes]) => (
+                    <optgroup key={location} label={location}>
+                      {locNodes.map((node) => (
+                        <option key={node.id} value={node.id}>
+                          {node.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium mb-1.5">
                   Memory (MB)
@@ -214,6 +230,20 @@ export default function NewServerPage() {
                   min={512}
                   value={diskMb}
                   onChange={(e) => setDiskMb(e.target.value)}
+                  className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1.5">
+                  CPU (%)
+                </label>
+                <input
+                  type="number"
+                  required
+                  min={1}
+                  max={1000}
+                  value={cpuPercent}
+                  onChange={(e) => setCpuPercent(e.target.value)}
                   className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                 />
               </div>

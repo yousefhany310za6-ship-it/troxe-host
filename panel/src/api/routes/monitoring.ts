@@ -130,21 +130,53 @@ export default async function monitoringRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const { period } = request.query as { period?: string };
 
-      const points = [];
-      const now = Date.now();
-      const count = period === "24h" ? 144 : period === "7d" ? 168 : 60;
+      let interval: string;
+      let bucketMinutes: number;
 
-      for (let i = count; i >= 0; i--) {
-        const ts = new Date(now - i * (period === "7d" ? 3600000 : period === "24h" ? 600000 : 60000));
-        points.push({
-          timestamp: ts.toISOString(),
-          memory: 0,
-          cpu: 0,
-          disk: 0,
-        });
+      switch (period) {
+        case "24h":
+          interval = "10 minutes";
+          bucketMinutes = 10;
+          break;
+        case "7d":
+          interval = "1 hour";
+          bucketMinutes = 60;
+          break;
+        case "1h":
+        default:
+          interval = "1 minute";
+          bucketMinutes = 1;
+          break;
       }
 
-      return reply.send({ history: points });
+      const result = await app.db.query(
+        `SELECT
+           date_trunc('minute', created_at) - (EXTRACT(minute FROM created_at)::int % $2) * interval '1 minute' AS bucket,
+           AVG(memory_used)::bigint AS memory,
+           AVG(cpu_usage)::float AS cpu,
+           AVG(disk_used)::bigint AS disk,
+           AVG(network_rx)::bigint AS network_rx,
+           AVG(network_tx)::bigint AS network_tx,
+           AVG(uptime)::int AS uptime
+         FROM server_stats_history
+         WHERE server_id = $1
+           AND created_at > now() - $3::interval
+         GROUP BY bucket
+         ORDER BY bucket ASC`,
+        [id, bucketMinutes, period || "1h"]
+      );
+
+      const history = result.rows.map((row: any) => ({
+        timestamp: row.bucket.toISOString(),
+        memory: Number(row.memory) || 0,
+        cpu: Number(row.cpu) || 0,
+        disk: Number(row.disk) || 0,
+        networkRx: Number(row.network_rx) || 0,
+        networkTx: Number(row.network_tx) || 0,
+        uptime: Number(row.uptime) || 0,
+      }));
+
+      return reply.send({ history });
     }
   );
 

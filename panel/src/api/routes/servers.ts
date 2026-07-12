@@ -27,6 +27,8 @@ function mapServer(row: Record<string, any>) {
     cpuUsed: 0,
     diskLimit: Number(row.disk_mb) || 0,
     diskUsed: 0,
+    crashCount: Number(row.crash_count) || 0,
+    lastCrashedAt: row.last_crashed_at || null,
   };
 }
 
@@ -38,6 +40,7 @@ const createServerSchema = z.object({
   memoryMb: z.number().int().min(128).max(1048576).optional(),
   diskMb: z.number().int().min(512).max(10485760).optional(),
   cpuPercent: z.number().min(1).max(1000).optional(),
+  startupCommand: z.string().optional(),
   environment: z.record(z.string()).optional(),
 });
 
@@ -158,7 +161,28 @@ export default async function serverRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Server not found" });
       }
 
-      return reply.send({ server: mapServer(result.rows[0]) });
+      const server = mapServer(result.rows[0]);
+
+      if (server.status === "running") {
+        try {
+          const node = await getNodeForServer(id, app.db);
+          if (node) {
+            const resp = await agentGet(node, `/api/servers/${id}/stats`);
+            if (resp.ok && resp.data) {
+              const agentStats = (resp.data as any).stats || resp.data;
+              const memUsed = agentStats.memory_bytes || 0;
+              const diskUsed = agentStats.disk_bytes || 0;
+              server.memoryUsed = Math.round(memUsed / (1024 * 1024));
+              server.cpuUsed = Math.round((agentStats.cpu_absolute || 0) * 100) / 100;
+              server.diskUsed = Math.round(diskUsed / (1024 * 1024));
+            }
+          }
+        } catch {
+          // Agent unreachable — keep zeroed values
+        }
+      }
+
+      return reply.send({ server });
     }
   );
 
@@ -215,6 +239,7 @@ export default async function serverRoutes(app: FastifyInstance) {
       const memoryMb = body.memoryMb || egg.default_memory_mb;
       const diskMb = body.diskMb || egg.default_disk_mb;
       const cpuPercent = body.cpuPercent || egg.default_cpu_percent;
+      const startupCommand = body.startupCommand || egg.startup_command;
 
       // Create server record
       const result = await app.db.query(
@@ -235,7 +260,7 @@ export default async function serverRoutes(app: FastifyInstance) {
           cpuPercent,
           egg.default_pid_limit,
           egg.docker_image,
-          egg.startup_command,
+          startupCommand,
           JSON.stringify(body.environment || {}),
         ]
       );
@@ -377,6 +402,22 @@ export default async function serverRoutes(app: FastifyInstance) {
         serverId: id,
         nodeId: server.node_id,
       });
+
+      return reply.send({ success: true });
+    }
+  );
+
+  // Reset server crash count
+  app.post(
+    "/servers/:id/reset-crash-count",
+    { preHandler: [authenticateSession, requireServerAccess] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      await app.db.query(
+        `UPDATE servers SET crash_count = 0, last_crashed_at = NULL WHERE id = $1`,
+        [id]
+      );
 
       return reply.send({ success: true });
     }
