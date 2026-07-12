@@ -23,9 +23,13 @@ import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth";
 import ThemeToggle from "@/components/theme-toggle";
 
-const navigation = [
+const userNavigation = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { name: "Servers", href: "/dashboard/servers", icon: Server },
+  { name: "Settings", href: "/dashboard/settings", icon: Settings },
+];
+
+const adminNavigation = [
   { name: "Nodes", href: "/dashboard/nodes", icon: Network },
   { name: "Users", href: "/dashboard/users", icon: Users },
   { name: "Locations", href: "/dashboard/locations", icon: MapPin },
@@ -34,7 +38,6 @@ const navigation = [
   { name: "Database Hosts", href: "/dashboard/database-hosts", icon: Database },
   { name: "Activity", href: "/dashboard/activity", icon: Activity },
   { name: "Jobs", href: "/dashboard/jobs", icon: ListTodo },
-  { name: "Settings", href: "/dashboard/settings", icon: Settings },
 ];
 
 function SidebarContent({
@@ -76,7 +79,7 @@ function SidebarContent({
       </div>
 
       <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-        {navigation.map((item) => {
+        {userNavigation.map((item) => {
           const isActive =
             item.href === "/dashboard"
               ? pathname === "/dashboard"
@@ -98,6 +101,34 @@ function SidebarContent({
             </Link>
           );
         })}
+        {user?.isAdmin && (
+          <>
+            <div className="pt-3 pb-1 px-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+                Admin
+              </p>
+            </div>
+            {adminNavigation.map((item) => {
+              const isActive = pathname.startsWith(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={onNavigate}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-brand-600/10 text-brand-400"
+                      : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  )}
+                >
+                  <item.icon className="h-5 w-5 shrink-0" />
+                  {item.name}
+                </Link>
+              );
+            })}
+          </>
+        )}
       </nav>
 
       <div className="p-4 border-t border-border">
