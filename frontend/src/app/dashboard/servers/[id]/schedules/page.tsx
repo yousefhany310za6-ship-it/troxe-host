@@ -16,10 +16,14 @@ interface ScheduleTask {
 interface Schedule {
   id: string;
   name: string;
-  cron: string;
-  active: boolean;
-  lastRun: string | null;
+  cron_expression: string;
+  is_active: boolean;
+  last_run_at: string | null;
   tasks: ScheduleTask[];
+}
+
+interface ScheduleResponse {
+  schedules: Schedule[];
 }
 
 export default function SchedulesPage({
@@ -34,10 +38,11 @@ export default function SchedulesPage({
   const [taskType, setTaskType] = useState<ScheduleTask["type"]>("command");
   const [taskPayload, setTaskPayload] = useState("");
 
-  const { data: schedules, error, isLoading, mutate } = useSWR<Schedule[]>(
+  const { data: scheduleData, error, isLoading, mutate } = useSWR<ScheduleResponse>(
     `/api/v1/servers/${id}/schedules`,
-    (url: string) => fetchApi<Schedule[]>(url)
+    (url: string) => fetchApi<ScheduleResponse>(url)
   );
+  const schedules = scheduleData?.schedules ?? [];
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -47,7 +52,7 @@ export default function SchedulesPage({
         method: "POST",
         body: JSON.stringify({
           name,
-          cron,
+          cronExpression: cron,
           tasks: [{ type: taskType, payload: taskPayload }],
         }),
       });
@@ -188,20 +193,20 @@ export default function SchedulesPage({
                     Failed to load schedules.
                   </td>
                 </tr>
-              ) : schedules && schedules.length > 0 ? (
+              ) : schedules.length > 0 ? (
                 schedules.map((schedule) => (
                   <tr
                     key={schedule.id}
                     className="border-b border-border last:border-0 hover:bg-secondary/50 transition-colors"
                   >
                     <td className="px-6 py-3 font-medium">{schedule.name}</td>
-                    <td className="px-6 py-3 font-mono text-muted-foreground">{schedule.cron}</td>
+                    <td className="px-6 py-3 font-mono text-muted-foreground">{schedule.cron_expression}</td>
                     <td className="px-6 py-3">
                       <button
-                        onClick={() => handleToggle(schedule.id, schedule.active)}
+                        onClick={() => handleToggle(schedule.id, schedule.is_active)}
                         className="flex items-center"
                       >
-                        {schedule.active ? (
+                        {schedule.is_active ? (
                           <ToggleRight className="h-6 w-6 text-emerald-500" />
                         ) : (
                           <ToggleLeft className="h-6 w-6 text-muted-foreground" />
@@ -209,7 +214,7 @@ export default function SchedulesPage({
                       </button>
                     </td>
                     <td className="px-6 py-3 text-muted-foreground">
-                      {schedule.lastRun ? new Date(schedule.lastRun).toLocaleString() : "Never"}
+                      {schedule.last_run_at ? new Date(schedule.last_run_at).toLocaleString() : "Never"}
                     </td>
                     <td className="px-6 py-3">
                       <div className="flex items-center justify-end">

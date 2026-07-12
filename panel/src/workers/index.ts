@@ -6,6 +6,7 @@ import { config } from "../config/env.js";
 import {
   agentPost,
   agentGet,
+  agentDelete,
   getNodeForServer,
   sendServerCommand,
 } from "../lib/node-agent.js";
@@ -530,9 +531,27 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
       [backupId]
     );
 
+    const node = await getNodeForServer(serverId, db);
+    if (!node) throw new Error(`Node not found for server ${serverId}`);
+
+    const resp = await agentPost<{
+      success: boolean;
+      filename: string;
+      size: number;
+    }>(node, `/api/servers/${serverId}/backup/create`);
+
+    if (!resp.ok) {
+      await db.query(
+        `UPDATE backups SET status = 'failed', completed_at = now() WHERE id = $1`,
+        [backupId]
+      );
+      throw new Error(`Backup creation failed: ${resp.error}`);
+    }
+
     await db.query(
-      `UPDATE backups SET status = 'completed', completed_at = now() WHERE id = $1`,
-      [backupId]
+      `UPDATE backups SET status = 'completed', storage_path = $1, size_bytes = $2, completed_at = now()
+       WHERE id = $3`,
+      [resp.data.filename, resp.data.size, backupId]
     );
 
     await eventBus.emit("backup.completed", {
@@ -542,8 +561,28 @@ const jobHandlers: Record<string, (job: Job) => Promise<void>> = {
   },
 
   "backup.delete": async (job) => {
-    const { backupId } = job.data;
+    const { backupId, serverId } = job.data;
     console.log(`[Job] Deleting backup: ${backupId}`);
+
+    const result = await db.query(
+      `SELECT storage_path FROM backups WHERE id = $1`,
+      [backupId]
+    );
+
+    if (result.rows.length > 0 && result.rows[0].storage_path) {
+      const node = await getNodeForServer(serverId, db);
+      if (node) {
+        const filename = result.rows[0].storage_path;
+        const resp = await agentDelete(
+          node,
+          `/api/servers/${serverId}/backup/delete/${filename}`
+        );
+        if (!resp.ok) {
+          console.warn(`[Job] Agent failed to delete backup file: ${resp.error}`);
+        }
+      }
+    }
+
     await db.query(`DELETE FROM backups WHERE id = $1`, [backupId]);
   },
 };

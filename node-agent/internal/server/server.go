@@ -80,6 +80,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/servers/{id}/files/compress", s.handleFileCompressRoute)
 	mux.HandleFunc("POST /api/servers/{id}/files/decompress", s.handleFileDecompressRoute)
 
+	// Backup management
+	mux.HandleFunc("POST /api/servers/{id}/backup/create", s.handleBackupCreateRoute)
+	mux.HandleFunc("GET /api/servers/{id}/backup/download/{filename}", s.handleBackupDownloadRoute)
+	mux.HandleFunc("DELETE /api/servers/{id}/backup/delete/{filename}", s.handleBackupDeleteRoute)
+
 	// Stats
 	mux.HandleFunc("GET /api/servers/{id}/stats", s.handleStatsRoute)
 
@@ -694,6 +699,23 @@ func (s *Server) handleStatsRoute(w http.ResponseWriter, r *http.Request) {
 	stats := s.getContainerStats(serverID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"stats": stats})
+}
+
+func (s *Server) handleBackupCreateRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	s.handleBackupCreate(w, r, serverID)
+}
+
+func (s *Server) handleBackupDownloadRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	filename := r.PathValue("filename")
+	s.handleBackupDownload(w, r, serverID, filename)
+}
+
+func (s *Server) handleBackupDeleteRoute(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	filename := r.PathValue("filename")
+	s.handleBackupDelete(w, r, serverID, filename)
 }
 
 func wsIsOpen(client *WSClient) bool {

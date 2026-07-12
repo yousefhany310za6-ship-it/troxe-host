@@ -7,6 +7,7 @@ import {
 } from "../middleware/rbac.js";
 import { addJob } from "../../workers/index.js";
 import { eventBus } from "../../events/index.js";
+import { getNodeForServer, signAgentJWT } from "../../lib/node-agent.js";
 
 const createBackupSchema = z.object({
   name: z.string().min(1).max(100).optional(),
@@ -27,15 +28,25 @@ export default async function backupRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
 
-      const result = await app.db.query(
-        `SELECT id, name, size_bytes, sha256_hash, status, completed_at, created_at
-         FROM backups
-         WHERE server_id = $1
-         ORDER BY created_at DESC`,
-        [id]
-      );
+      const [backupsResult, limitResult] = await Promise.all([
+        app.db.query(
+          `SELECT id, name, size_bytes, sha256_hash, status, completed_at, created_at
+           FROM backups
+           WHERE server_id = $1
+           ORDER BY created_at DESC`,
+          [id]
+        ),
+        app.db.query(
+          `SELECT e.max_backups
+           FROM servers s JOIN eggs e ON s.egg_id = e.id
+           WHERE s.id = $1`,
+          [id]
+        ),
+      ]);
 
-      return reply.send({ backups: result.rows });
+      const limit = limitResult.rows[0]?.max_backups ?? 5;
+
+      return reply.send({ backups: backupsResult.rows, limit });
     }
   );
 
@@ -112,7 +123,7 @@ export default async function backupRoutes(app: FastifyInstance) {
       ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { backupId } = request.params as { serverId: string; backupId: string };
+      const { backupId, serverId } = request.params as { serverId: string; backupId: string };
 
       const result = await app.db.query(
         "SELECT id, storage_path FROM backups WHERE id = $1",
@@ -124,7 +135,7 @@ export default async function backupRoutes(app: FastifyInstance) {
       }
 
       // Queue deletion job
-      await addJob("backup.delete", { backupId });
+      await addJob("backup.delete", { backupId, serverId });
 
       return reply.send({ success: true });
     }
@@ -141,7 +152,7 @@ export default async function backupRoutes(app: FastifyInstance) {
       ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { backupId } = request.params as { serverId: string; backupId: string };
+      const { backupId, serverId } = request.params as { serverId: string; backupId: string };
 
       const result = await app.db.query(
         "SELECT name, storage_path, status FROM backups WHERE id = $1",
@@ -158,9 +169,47 @@ export default async function backupRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Backup not ready" });
       }
 
-      // TODO: Stream backup file from storage
-      // For now return a placeholder
-      return reply.send({ message: "Download not yet implemented" });
+      if (!backup.storage_path) {
+        return reply.status(404).send({ error: "Backup file not found" });
+      }
+
+      const node = await getNodeForServer(serverId, app.db);
+      if (!node) {
+        return reply.status(500).send({ error: "Node not found" });
+      }
+
+      const token = signAgentJWT("system");
+      const url = `http://${node.fqdn}:${node.daemon_listen_port}/api/servers/${serverId}/backup/download/${backup.storage_path}`;
+
+      const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!resp.ok) {
+        return reply.status(502).send({ error: "Failed to fetch backup from node" });
+      }
+
+      reply.raw.setHeader("Content-Type", "application/zip");
+      reply.raw.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${backup.name || backup.storage_path}"`
+      );
+
+      if (resp.body) {
+        const reader = resp.body.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            reply.raw.write(value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
+
+      reply.raw.end();
+      return reply;
     }
   );
 }

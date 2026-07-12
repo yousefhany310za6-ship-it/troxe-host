@@ -11,9 +11,10 @@ import { Button } from "@/components/ui/button";
 interface Backup {
   id: string;
   name: string;
-  size: number;
+  size_bytes: number;
   status: "building" | "completed" | "failed";
-  createdAt: string;
+  created_at: string;
+  completed_at: string | null;
 }
 
 interface BackupInfo {
@@ -114,9 +115,9 @@ export default function BackupsPage({
                       <div className="space-y-0.5">
                         <p className="font-medium">{backup.name}</p>
                         <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                          <span>{formatBytes(backup.size)}</span>
+                          <span>{formatBytes(backup.size_bytes)}</span>
                           <span>&middot;</span>
-                          <span>{new Date(backup.createdAt).toLocaleString()}</span>
+                          <span>{new Date(backup.created_at).toLocaleString()}</span>
                         </div>
                       </div>
                     </div>

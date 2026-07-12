@@ -77,16 +77,7 @@ export default async function scheduleRoutes(app: FastifyInstance) {
   );
 
   // Update schedule
-  app.put(
-    "/servers/:serverId/schedules/:scheduleId",
-    {
-      preHandler: [
-        authenticateSession,
-        requireServerAccess,
-        requirePermission("schedule.create"),
-      ],
-    },
-    async (request: FastifyRequest, reply: FastifyReply) => {
+  async function updateScheduleHandler(request: FastifyRequest, reply: FastifyReply) {
       const { scheduleId } = request.params as {
         serverId: string;
         scheduleId: string;
@@ -95,6 +86,7 @@ export default async function scheduleRoutes(app: FastifyInstance) {
         name: string;
         cronExpression: string;
         isActive: boolean;
+        active: boolean;
         tasks: { type: string; payload: string }[];
       }>;
 
@@ -114,6 +106,10 @@ export default async function scheduleRoutes(app: FastifyInstance) {
         updates.push(`is_active = $${idx++}`);
         values.push(body.isActive);
       }
+      if (body.active !== undefined) {
+        updates.push(`is_active = $${idx++}`);
+        values.push(body.active);
+      }
       if (body.tasks !== undefined) {
         updates.push(`tasks = $${idx++}`);
         values.push(JSON.stringify(body.tasks));
@@ -131,7 +127,17 @@ export default async function scheduleRoutes(app: FastifyInstance) {
 
       return reply.send({ success: true });
     }
-  );
+
+  const updatePreHandler = {
+    preHandler: [
+      authenticateSession,
+      requireServerAccess,
+      requirePermission("schedule.create"),
+    ],
+  };
+
+  app.put("/servers/:serverId/schedules/:scheduleId", updatePreHandler, updateScheduleHandler);
+  app.patch("/servers/:serverId/schedules/:scheduleId", updatePreHandler, updateScheduleHandler);
 
   // Delete schedule
   app.delete(
